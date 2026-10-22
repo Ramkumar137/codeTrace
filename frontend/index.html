@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description"
+        content="Inspect and validate Jupyter Notebook files with CodeTrace." />
+  <title>CodeTrace — Notebook Inspector</title>
+
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="logo" href="#" aria-label="CodeTrace home">
+        <span
+          class="logo-bracket"
+          id="api-health-indicator"
+          data-health="checking"
+          role="img"
+          aria-label="API health check pending"
+          title="API health check pending"
+        >&lt;/&gt;</span>
+        <span class="logo-text">CodeTrace</span>
+      </a>
+      <nav class="primary-nav" aria-label="Main navigation">
+        <a href="#inspect" data-route="inspect">Inspect Notebook</a>
+        <a href="#about" data-route="about">About</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ── Hero ───────────────────────────────────────────────────────────── -->
+  <main>
+    <div class="container" id="inspect-view">
+      <div id="upload-stage">
+        <section class="page-intro" aria-labelledby="page-heading">
+          <h1 class="page-title" id="page-heading">Inspect a Jupyter Notebook</h1>
+          <p class="page-description">
+            Upload an .ipynb file to inspect its structure, pipeline, and evaluation risks.
+            Notebook code is parsed as text and never executed.
+          </p>
+        </section>
+
+        <form class="upload-card" id="upload-form">
+          <label class="upload-label" for="notebook-file">Notebook file</label>
+          <p class="upload-hint" id="upload-hint">Select a Jupyter Notebook (.ipynb), up to 10 MB.</p>
+          <input
+            class="upload-input"
+            id="notebook-file"
+            name="file"
+            type="file"
+            accept=".ipynb"
+            aria-describedby="upload-hint upload-message"
+          />
+          <p class="upload-message hidden" id="upload-message" role="status" aria-live="polite"></p>
+          <div class="upload-actions">
+            <button class="btn" id="upload-btn" type="submit">Upload Notebook</button>
+          </div>
+        </form>
+      </div>
+
+      <section class="investigation hidden" id="investigation-workspace" aria-label="Notebook investigation workspace">
+        <nav class="workspace-nav" aria-label="Notebook investigation pages">
+          <a href="#summary" data-workspace-route="summary">Notebook summary</a>
+          <a href="#overview" data-workspace-route="overview">Overview</a>
+          <a href="#pipeline" data-workspace-route="pipeline">Pipeline Trace</a>
+          <a href="#audit" data-workspace-route="audit">Leakage &amp; Evaluation Audit</a>
+          <a href="#cells" data-workspace-route="cells">Cell Explorer</a>
+          <a href="#evidence" data-workspace-route="evidence">Evidence Report</a>
+        </nav>
+
+        <section class="workspace-section workspace-page summary-page" id="notebook-summary" data-workspace-page="summary" aria-labelledby="summary-heading">
+          <h1 class="workspace-heading" id="summary-heading">Notebook summary</h1>
+          <p class="analysis-summary" id="analysis-summary"></p>
+          <table class="detail-table" aria-label="Uploaded notebook summary">
+            <tbody id="notebook-summary-body"></tbody>
+          </table>
+          <h2 class="summary-subheading">Explore notebook</h2>
+          <nav class="summary-feature-nav" aria-label="Explore notebook sections">
+            <a class="feature-link" href="#overview">Overview</a>
+            <a class="feature-link" href="#pipeline">Pipeline Trace</a>
+            <a class="feature-link" href="#audit">Leakage &amp; Evaluation Audit</a>
+            <a class="feature-link" href="#cells">Cell Explorer</a>
+            <a class="feature-link" href="#evidence">Evidence Report</a>
+          </nav>
+          <div class="summary-footer">
+            <p class="section-description">Choose a section above to review the notebook inspection results.</p>
+            <button class="text-button" id="choose-another-notebook" type="button">Choose another notebook</button>
+          </div>
+        </section>
+
+        <section class="workspace-section workspace-page hidden" id="overview-section" data-workspace-page="overview">
+          <h2>Overview</h2>
+          <div class="overview-metadata">
+            <div><span>Filename</span><strong id="overview-filename"></strong></div>
+            <div><span>Format version</span><strong id="overview-format-version"></strong></div>
+            <div><span>Total cells</span><strong id="overview-total-cells"></strong></div>
+            <div><span>Code / Markdown / Raw</span><strong id="overview-cell-counts"></strong></div>
+          </div>
+          <div class="overview-grid">
+            <article class="workspace-card">
+              <h3>Imports &amp; libraries</h3>
+              <ul id="imports-list" class="compact-list"></ul>
+            </article>
+            <article class="workspace-card">
+              <h3>Dataset references inferred from source</h3>
+              <ul id="datasets-list" class="compact-list"></ul>
+            </article>
+            <article class="workspace-card">
+              <h3>Recognized operations</h3>
+              <ul id="operations-list" class="compact-list"></ul>
+            </article>
+          </div>
+          <p class="caveat-note" id="overview-limitations"></p>
+        </section>
+
+        <section class="workspace-section workspace-page hidden" id="pipeline-section" data-workspace-page="pipeline">
+          <h2>Pipeline Trace</h2>
+          <p class="section-description">An X-Ray-inspired map of recognized source operations. This is static analysis, not a runtime trace; connections are inferred from shared variable references.</p>
+          <div class="graph-layout">
+            <div class="workspace-card graph-card">
+              <h3>Inferred workflow</h3>
+              <div class="graph-legend" aria-label="Pipeline graph legend">
+                <span><i class="legend-shape source-shape" aria-hidden="true"></i>Data source</span>
+                <span><i class="legend-shape transform-shape" aria-hidden="true"></i>Feature / preprocessing</span>
+                <span><i class="legend-shape split-shape" aria-hidden="true"></i>Split</span>
+                <span><i class="legend-shape model-shape" aria-hidden="true"></i>Model</span>
+                <span><i class="legend-shape step-shape" aria-hidden="true"></i>Fit / predict / evaluate</span>
+                <span><i class="legend-cross" aria-hidden="true">×</i>Finding at this source location</span>
+              </div>
+              <div class="graph-viewport" id="graph-viewport" tabindex="0" aria-label="Scrollable static pipeline graph">
+                <svg id="pipeline-graph" class="pipeline-graph" role="group" aria-label="Static notebook pipeline visualization"></svg>
+              </div>
+              <p class="empty-state hidden" id="graph-empty">No supported pipeline could be reconstructed from the recognized source patterns.</p>
+              <ul id="graph-nodes" class="selectable-list hidden"></ul>
+            </div>
+            <div class="workspace-card graph-details">
+              <details>
+                <summary>Inferred relationships and unresolved references</summary>
+                <h3>Inferred relationships</h3>
+                <ul id="graph-edges" class="compact-list"></ul>
+                <h3>Unresolved references</h3>
+                <ul id="graph-unresolved" class="compact-list"></ul>
+              </details>
+            </div>
+          </div>
+          <p class="caveat-note">Select a node to inspect its source cell. A red × marks a node at a supported potential finding location; it is not a confirmed runtime failure. Dashed connections are inferred references, not observed data transfer.</p>
+        </section>
+
+        <section class="workspace-section workspace-page hidden" id="audit-section" data-workspace-page="audit">
+          <h2>Leakage &amp; Evaluation Audit</h2>
+          <p class="section-description">Potential source patterns for review; these findings do not prove a runtime leak or invalid result.</p>
+          <ul id="findings-list" class="finding-list"></ul>
+          <p class="empty-state hidden" id="findings-empty">No supported audit pattern was detected. This is not proof that the notebook is free of leakage or evaluation issues.</p>
+        </section>
+
+        <section class="workspace-section workspace-page hidden" id="cells-section" data-workspace-page="cells">
+          <h2>Cell Explorer</h2>
+          <label class="upload-label" for="cell-selector">Select a notebook cell</label>
+          <select class="cell-selector" id="cell-selector"></select>
+          <p class="cell-meta" id="cell-meta"></p>
+          <pre class="cell-source" id="cell-source"></pre>
+        </section>
+
+        <section class="workspace-section workspace-page hidden" id="evidence-section" data-workspace-page="evidence">
+          <h2>Evidence Report</h2>
+          <p class="section-description">Download a JSON report containing this parse, supported findings, source references, confidence definitions, and limitations.</p>
+          <button class="btn" id="download-report" type="button">Download evidence report</button>
+          <p class="caveat-note">Confidence describes source-pattern support only; it is not a probability that a real-world issue occurred.</p>
+        </section>
+      </section>
+    </div>
+
+    <section class="about-view hidden" id="about-view" aria-labelledby="about-title">
+      <div class="container about-content">
+        <h1 class="about-title" id="about-title">Your model passed the test. But was the test trustworthy?</h1>
+        <p class="about-lead">Machine-learning results can look convincing while the evaluation process quietly reuses training data, fits transformations using held-out examples, or carries information from the target into the features. These mistakes can inflate scores and make a model less reliable when it meets new data.</p>
+        <section class="about-section">
+          <h2>Follow the evidence through the notebook</h2>
+          <p>CodeTrace inspects notebook source without running it. It identifies recognizable data-loading, preprocessing, split, model, prediction, and evaluation calls, then connects operations when source code shows shared variable references. Each extracted operation points back to its cell and line so you can inspect the original context.</p>
+        </section>
+        <section class="about-section">
+          <h2>Trace, audit, and review</h2>
+          <p>The pipeline trace is a compact, X-Ray-inspired view of the workflow that can be supported by static source. The audit flags a limited set of recognizable patterns, with evidence, confidence definitions, and practical review guidance. The evidence report preserves those findings and their source references for reproducibility and discussion.</p>
+          <p>Current checks are deliberately narrow: they can flag test-named variables passed to fitting, training-named variables passed to evaluation, and common preprocessing fits that appear before a later split. A flagged pattern is a potential risk, not a confirmed defect.</p>
+        </section>
+        <section class="about-section">
+          <h2>Interpret with care</h2>
+          <p>Static analysis cannot establish every runtime fact. Variable names and source order may not reflect actual data contents or execution order; dynamic code, aliases, hidden state, and dataset contents may be outside the analyzer’s reach. CodeTrace does not load referenced paths or URLs, execute notebook cells, or prove that a dataset was loaded or a model was trained.</p>
+        </section>
+        <a class="btn about-action" href="#inspect">Inspect a notebook</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container"><p>&copy; 2026 CodeTrace</p></div>
+  </footer>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
