@@ -4,6 +4,7 @@
 
 const API_BASE_URL = "http://127.0.0.1:8000";
 const HEALTH_CHECK_INTERVAL_MS = 15_000;
+const GENERIC_UPLOAD_ERROR = "Something went wrong. Please try again later.";
 const healthIndicator = document.getElementById("api-health-indicator");
 const uploadForm = document.getElementById("upload-form");
 const uploadStage = document.getElementById("upload-stage");
@@ -150,9 +151,11 @@ uploadForm.addEventListener("submit", async (event) => {
     }
 
     if (!response.ok) {
-      const message = data && data.detail && typeof data.detail.message === "string"
-        ? data.detail.message
-        : `The server rejected the upload (HTTP ${response.status}).`;
+      const message = response.status >= 500
+        ? GENERIC_UPLOAD_ERROR
+        : data && data.detail && typeof data.detail.message === "string"
+          ? data.detail.message
+          : "The upload could not be completed. Please check the file and try again.";
       showUploadMessage(message, "error");
       return;
     }
@@ -172,10 +175,7 @@ uploadForm.addEventListener("submit", async (event) => {
     uploadStage.classList.add("hidden");
     window.location.hash = "#summary";
   } catch {
-    showUploadMessage(
-      `Could not reach the backend. Make sure it is running at ${API_BASE_URL}.`,
-      "error"
-    );
+    showUploadMessage(GENERIC_UPLOAD_ERROR, "error");
   } finally {
     uploadInProgress = false;
     uploadBtn.disabled = false;
