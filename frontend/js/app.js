@@ -101,6 +101,10 @@ function showRoute() {
   });
 }
 
+if (!window.location.hash) {
+  window.history.replaceState(null, "", "#about");
+}
+
 window.addEventListener("hashchange", showRoute);
 showRoute();
 
@@ -275,6 +279,7 @@ function renderInvestigation(notebook) {
   document.getElementById("overview-total-cells").textContent = String(notebook.total_cells);
   document.getElementById("overview-cell-counts").textContent =
     `${notebook.code_cells} / ${notebook.markdown_cells} / ${notebook.raw_cells}`;
+  renderLibraries(analysis.libraries || []);
   renderList("imports-list", (analysis.imports || []).map((item) =>
     `${item.module}${item.name !== item.module.split(".")[0] ? ` as ${item.name}` : ""} · cell ${item.cell_index + 1}:${item.line}`
   ), "No import statements recognized.");
@@ -301,9 +306,67 @@ function renderInvestigation(notebook) {
     (analysis.limitations || []).join(" ");
 
   renderGraph(analysis.pipeline_graph, analysis.findings);
+  renderWorkflowStages(analysis.pipeline_graph, analysis.findings);
   renderFindings(analysis.findings);
+  renderOverviewCells(notebook.cells);
   renderCells(notebook.cells);
   return true;
+}
+
+function renderLibraries(libraries) {
+  const list = document.getElementById("libraries-list");
+  list.replaceChildren();
+  if (!libraries.length) {
+    const empty = document.createElement("li");
+    empty.className = "library-empty";
+    empty.textContent = "No imported libraries recognized.";
+    list.appendChild(empty);
+    return;
+  }
+
+  libraries.forEach((library) => {
+    const item = document.createElement("li");
+    const chip = document.createElement("span");
+    chip.className = "library-chip";
+    chip.textContent = library;
+    item.appendChild(chip);
+    list.appendChild(item);
+  });
+}
+
+function renderOverviewCells(cells) {
+  const list = document.getElementById("overview-notebook-cells");
+  list.replaceChildren();
+  cells.forEach((cell) => {
+    const item = document.createElement("li");
+    item.className = `notebook-cell notebook-cell-${cell.cell_type}`;
+    const header = document.createElement("div");
+    header.className = "notebook-cell-header";
+    const label = document.createElement("strong");
+    label.textContent = `Cell ${cell.index + 1} · ${cell.cell_type}`;
+    header.appendChild(label);
+
+    if (cell.cell_type === "code") {
+      const metadata = document.createElement("span");
+      metadata.textContent =
+        `Execution count: ${cell.execution_count ?? "not saved"} · Saved outputs: ${cell.has_outputs ? "yes" : "no"}`;
+      header.appendChild(metadata);
+    }
+
+    const source = document.createElement("pre");
+    source.className = "notebook-cell-source";
+    source.textContent = cell.source || "(empty cell)";
+    const inspect = document.createElement("button");
+    inspect.type = "button";
+    inspect.className = "text-button notebook-cell-inspect";
+    inspect.textContent = "Open in Cell Explorer";
+    inspect.addEventListener("click", () => {
+      selectCell(cell.index);
+      window.location.hash = "#cells";
+    });
+    item.append(header, source, inspect);
+    list.appendChild(item);
+  });
 }
 
 function renderList(elementId, items, emptyMessage) {
@@ -412,7 +475,8 @@ function renderGraph(graph, findings) {
     button.type = "button";
     button.dataset.nodeId = node.id;
     button.dataset.cellIndex = String(node.cell_index);
-    button.textContent = `${node.label} · line ${node.line} · static source`;
+    const operationLabel = node.label.split(" · cell ")[0];
+    button.textContent = `${operationLabel} · cell ${node.cell_index + 1} · line ${node.line} · static source`;
     button.addEventListener("click", () => selectPipelineNode(node.id, node.cell_index));
     item.appendChild(button);
     nodesList.appendChild(item);
@@ -422,7 +486,10 @@ function renderGraph(graph, findings) {
     group.setAttribute("role", "button");
     group.setAttribute("tabindex", "0");
     group.setAttribute("aria-pressed", "false");
-    group.setAttribute("aria-label", `${node.label}, line ${node.line}, static source`);
+    group.setAttribute(
+      "aria-label",
+      `${operationLabel}, cell ${node.cell_index + 1}, line ${node.line}, static source`
+    );
     group.dataset.nodeId = node.id;
     group.dataset.cellIndex = String(node.cell_index);
     group.addEventListener("click", () => selectPipelineNode(node.id, node.cell_index));
@@ -434,7 +501,8 @@ function renderGraph(graph, findings) {
     });
 
     const title = document.createElementNS(svgNamespace, "title");
-    title.textContent = `${node.label} · ${node.source || "source not available"}`;
+    title.textContent =
+      `${operationLabel} · cell ${node.cell_index + 1}, line ${node.line} · ${node.source || "source not available"}`;
     group.appendChild(title);
     group.appendChild(createNodeShape(svgNamespace, node.kind, centerX, nodeY));
 
@@ -459,7 +527,7 @@ function renderGraph(graph, findings) {
       group.dataset.finding = "true";
       group.setAttribute(
         "aria-label",
-        `${node.label}, line ${node.line}, static source, supported potential finding at this location`
+        `${operationLabel}, cell ${node.cell_index + 1}, line ${node.line}, static source, supported potential finding at this location`
       );
       const markerCircle = document.createElementNS(svgNamespace, "circle");
       markerCircle.setAttribute("cx", String(centerX + 29));
@@ -511,6 +579,77 @@ function renderGraph(graph, findings) {
     ),
     "No unresolved variable inputs."
   );
+}
+
+function renderWorkflowStages(graph, findings) {
+  const stageDefinitions = [
+    { title: "Data sources", kinds: ["data_source"] },
+    { title: "Feature preparation", kinds: ["feature_engineering", "preprocessing"] },
+    { title: "Data split", kinds: ["split"] },
+    { title: "Model", kinds: ["model"] },
+    { title: "Training", kinds: ["training"] },
+    { title: "Prediction", kinds: ["prediction"] },
+    { title: "Evaluation", kinds: ["evaluation"] }
+  ];
+  const stages = stageDefinitions.map((stage) => ({
+    ...stage,
+    nodes: graph.nodes.filter((node) => stage.kinds.includes(node.kind))
+  }));
+  const knownKinds = new Set(stageDefinitions.flatMap((stage) => stage.kinds));
+  const otherNodes = graph.nodes.filter((node) => !knownKinds.has(node.kind));
+  if (otherNodes.length) {
+    stages.push({ title: "Other operations", nodes: otherNodes });
+  }
+
+  const activeStages = stages.filter((stage) => stage.nodes.length);
+  const stageList = document.getElementById("workflow-stages");
+  stageList.replaceChildren();
+  document.getElementById("workflow-summary").textContent = graph.nodes.length
+    ? `${graph.nodes.length} recognized operation${graph.nodes.length === 1 ? "" : "s"} across ${activeStages.length} workflow stage${activeStages.length === 1 ? "" : "s"} · ${graph.edges.length} inferred variable link${graph.edges.length === 1 ? "" : "s"} · ${findings.length} potential finding${findings.length === 1 ? "" : "s"}`
+    : "No supported operations were recognized in the notebook source.";
+
+  stages.forEach((stage, index) => {
+    const item = document.createElement("li");
+    item.className = "workflow-stage";
+    item.dataset.active = String(stage.nodes.length > 0);
+    item.dataset.stageIndex = String(index);
+    item.style.setProperty("--stage-index", String(index));
+    const heading = document.createElement("h5");
+    heading.textContent = stage.title;
+    const count = document.createElement("span");
+    count.className = "workflow-stage-count";
+    count.textContent = String(stage.nodes.length);
+    const operations = document.createElement("ul");
+    operations.className = "workflow-stage-operations";
+
+    if (!stage.nodes.length) {
+      const empty = document.createElement("li");
+      empty.className = "workflow-stage-empty";
+      empty.textContent = "Not recognized";
+      operations.appendChild(empty);
+    } else {
+      stage.nodes.forEach((node) => {
+        const operationItem = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "workflow-operation";
+        const operationLabel = node.label.split(" · cell ")[0];
+        button.textContent = `${operationLabel} · cell ${node.cell_index + 1}:${node.line}`;
+        button.setAttribute(
+          "aria-label",
+          `${operationLabel}, cell ${node.cell_index + 1}, line ${node.line}; open source cell`
+        );
+        button.addEventListener("click", () => {
+          selectPipelineNode(node.id, node.cell_index);
+        });
+        operationItem.appendChild(button);
+        operations.appendChild(operationItem);
+      });
+    }
+
+    item.append(heading, count, operations);
+    stageList.appendChild(item);
+  });
 }
 
 function createNodeShape(svgNamespace, kind, centerX, centerY) {

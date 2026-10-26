@@ -101,8 +101,13 @@
             <div><span>Code / Markdown / Raw</span><strong id="overview-cell-counts"></strong></div>
           </div>
           <div class="overview-grid">
+            <article class="workspace-card library-card">
+              <h3>Libraries detected from imports</h3>
+              <p class="card-note">Module names found in import statements; this does not confirm package installation.</p>
+              <ul id="libraries-list" class="library-list" aria-label="Detected libraries"></ul>
+            </article>
             <article class="workspace-card">
-              <h3>Imports &amp; libraries</h3>
+              <h3>Import statements</h3>
               <ul id="imports-list" class="compact-list"></ul>
             </article>
             <article class="workspace-card">
@@ -115,14 +120,20 @@
             </article>
           </div>
           <p class="caveat-note" id="overview-limitations"></p>
+          <section class="notebook-preview" aria-labelledby="notebook-preview-heading">
+            <h3 id="notebook-preview-heading">Notebook contents</h3>
+            <p class="card-note">All cells in notebook order. Source is shown as text and is never executed.</p>
+            <ol id="overview-notebook-cells" class="notebook-cell-list"></ol>
+          </section>
         </section>
 
         <section class="workspace-section workspace-page hidden" id="pipeline-section" data-workspace-page="pipeline">
           <h2>Pipeline Trace</h2>
-          <p class="section-description">An X-Ray-inspired map of recognized source operations. This is static analysis, not a runtime trace; connections are inferred from shared variable references.</p>
+          <p class="section-description">Follow every recognized operation from data loading through evaluation. Stages follow notebook source order and do not imply execution order; dashed links are inferred from shared variables, not observed data transfer.</p>
           <div class="graph-layout">
             <div class="workspace-card graph-card">
-              <h3>Inferred workflow</h3>
+              <h3>Workflow map</h3>
+              <p class="card-note" id="workflow-summary"></p>
               <div class="graph-legend" aria-label="Pipeline graph legend">
                 <span><i class="legend-shape source-shape" aria-hidden="true"></i>Data source</span>
                 <span><i class="legend-shape transform-shape" aria-hidden="true"></i>Feature / preprocessing</span>
@@ -135,6 +146,10 @@
                 <svg id="pipeline-graph" class="pipeline-graph" role="group" aria-label="Static notebook pipeline visualization"></svg>
               </div>
               <p class="empty-state hidden" id="graph-empty">No supported pipeline could be reconstructed from the recognized source patterns.</p>
+              <h4 class="workflow-heading">Notebook workflow stages</h4>
+              <div class="workflow-viewport" tabindex="0" aria-label="Scrollable workflow stages in notebook source order">
+                <ol id="workflow-stages" class="workflow-stages"></ol>
+              </div>
               <ul id="graph-nodes" class="selectable-list hidden"></ul>
             </div>
             <div class="workspace-card graph-details">

@@ -54,8 +54,12 @@ button:focus-visible, input:focus-visible {
 }
 
 .site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgb(23 32 51 / 4%);
 }
 
 .header-inner {
@@ -448,6 +452,119 @@ main {
   gap: 14px;
 }
 
+.card-note {
+  margin: -3px 0 12px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.library-card {
+  grid-column: 1 / -1;
+}
+
+.library-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library-chip {
+  display: inline-flex;
+  padding: 5px 10px;
+  color: #244883;
+  background: #eaf1ff;
+  border: 1px solid #cad9fa;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.library-empty {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.notebook-preview {
+  margin-top: 24px;
+}
+
+.notebook-preview > h3, .workflow-heading {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  font-weight: 620;
+}
+
+.notebook-cell-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: notebook-cell;
+}
+
+.notebook-cell {
+  min-width: 0;
+  padding: 13px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-left: 4px solid #8b9ab0;
+  border-radius: 7px;
+  counter-increment: notebook-cell;
+}
+
+.notebook-cell-code {
+  border-left-color: #5475ad;
+}
+
+.notebook-cell-markdown {
+  border-left-color: #428778;
+}
+
+.notebook-cell-raw {
+  border-left-color: #a97922;
+}
+
+.notebook-cell-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.notebook-cell-header strong {
+  color: var(--text);
+  font-size: 0.84rem;
+  text-transform: capitalize;
+}
+
+.notebook-cell-source {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  color: #1d2939;
+  background: var(--surface);
+  border: 1px solid #e3e8ef;
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.notebook-cell-inspect {
+  margin-top: 7px;
+}
+
 .graph-card {
   grid-column: 1 / -1;
 }
@@ -516,7 +633,9 @@ main {
   max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
-  background: var(--surface);
+  background:
+    radial-gradient(ellipse at 10% 0%, rgb(49 95 206 / 7%), transparent 42%),
+    linear-gradient(180deg, #fbfcff, #f6f9fd);
   border: 1px solid var(--border);
   border-radius: 7px;
 }
@@ -534,9 +653,10 @@ main {
 
 .pipeline-edge {
   fill: none;
-  stroke: #8795a8;
-  stroke-dasharray: 5 5;
+  stroke: #7290c2;
+  stroke-dasharray: 7 6;
   stroke-width: 2;
+  animation: edge-flow 1.4s linear infinite;
 }
 
 .pipeline-edge[data-highlighted="true"] {
@@ -562,6 +682,14 @@ main {
 .pipeline-node {
   cursor: pointer;
   outline: none;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: node-arrive 360ms ease both;
+  transition: transform 150ms ease;
+}
+
+.pipeline-node:hover, .pipeline-node:focus-visible {
+  transform: scale(1.06);
 }
 
 .pipeline-node-shape {
@@ -620,6 +748,132 @@ main {
 .pipeline-node-location {
   fill: var(--text-muted);
   font-size: 10px;
+}
+
+.workflow-heading {
+  margin-top: 20px;
+}
+
+.workflow-viewport {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  padding: 2px 2px 10px;
+}
+
+.workflow-viewport:focus-visible {
+  outline: 3px solid rgb(49 95 206 / 35%);
+  outline-offset: 2px;
+}
+
+.workflow-stages {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(158px, 1fr));
+  gap: 12px;
+  min-width: 1170px;
+  margin: 0;
+  padding: 0 0 4px;
+  list-style: none;
+}
+
+.workflow-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 150px;
+  padding: 12px;
+  background: linear-gradient(155deg, #fff, #f5f8ff);
+  border: 1px solid #d6dfed;
+  border-top: 3px solid #b7c2d2;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgb(23 32 51 / 4%);
+  animation: stage-arrive 420ms ease both;
+  animation-delay: calc(var(--stage-index, 0) * 45ms);
+}
+
+.workflow-stage[data-active="true"] {
+  border-top-color: var(--accent);
+}
+
+.workflow-stage:not(:last-child)::after {
+  position: absolute;
+  top: 32px;
+  right: -11px;
+  z-index: 1;
+  width: 10px;
+  height: 10px;
+  content: "";
+  background: #fff;
+  border-top: 2px solid #8da3c5;
+  border-right: 2px solid #8da3c5;
+  transform: rotate(45deg);
+}
+
+.workflow-stage h5 {
+  display: inline;
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.workflow-stage-count {
+  float: right;
+  min-width: 22px;
+  padding: 1px 6px;
+  color: #315fce;
+  background: #eaf1ff;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.workflow-stage-operations {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workflow-operation {
+  width: 100%;
+  padding: 7px 8px;
+  color: #34445e;
+  background: #fff;
+  border: 1px solid #e1e7f0;
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.workflow-operation:hover, .workflow-operation:focus-visible {
+  background: #f0f5ff;
+  border-color: #9db4e6;
+  transform: translateY(-1px);
+}
+
+.workflow-stage-empty {
+  color: #8994a5;
+  font-size: 0.76rem;
+  font-style: italic;
+}
+
+@keyframes edge-flow {
+  to { stroke-dashoffset: -26; }
+}
+
+@keyframes node-arrive {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes stage-arrive {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .finding-marker-bg {
@@ -881,5 +1135,7 @@ main {
   *, *::before, *::after {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }

@@ -6,8 +6,10 @@ Covers:
   - GET /api/health  health endpoint (added in Phase 1)
 """
 
+import logging
+
 from fastapi.testclient import TestClient
-from backend.app.main import app
+from backend.app.main import HealthCheckAccessLogFilter, app
 
 client = TestClient(app)
 
@@ -50,3 +52,45 @@ def test_api_health_service_name():
     """GET /api/health body must include the service name."""
     data = client.get("/api/health").json()
     assert data["service"] == "CodeTrace API"
+
+
+def test_successful_health_check_access_log_is_filtered():
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:63267", "GET", "/api/health", "1.1", 200),
+        None,
+    )
+
+    assert not HealthCheckAccessLogFilter().filter(record)
+
+
+def test_other_api_access_logs_remain_enabled():
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:63267", "POST", "/api/notebooks/upload", "1.1", 200),
+        None,
+    )
+
+    assert HealthCheckAccessLogFilter().filter(record)
+
+
+def test_failed_health_check_access_log_remains_enabled():
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:63267", "GET", "/api/health", "1.1", 503),
+        None,
+    )
+
+    assert HealthCheckAccessLogFilter().filter(record)

@@ -4,6 +4,7 @@ CodeTrace – FastAPI application entry point.
 FastAPI application with health checks and validated notebook upload.
 """
 
+import logging
 import os
 from pathlib import Path
 
@@ -20,6 +21,25 @@ MAX_UPLOAD_SIZE_BYTES = int(
 )
 if MAX_UPLOAD_SIZE_BYTES <= 0:
     raise RuntimeError("CODETRACE_MAX_UPLOAD_SIZE_BYTES must be greater than zero.")
+
+
+class HealthCheckAccessLogFilter(logging.Filter):
+    """Hide successful health-check requests from Uvicorn's access log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        arguments = record.args
+        if not isinstance(arguments, tuple) or len(arguments) < 5:
+            return True
+        _, method, path, _, status_code = arguments[:5]
+        return not (
+            method == "GET"
+            and isinstance(path, str)
+            and path.split("?", maxsplit=1)[0] == "/api/health"
+            and status_code == 200
+        )
+
+
+logging.getLogger("uvicorn.access").addFilter(HealthCheckAccessLogFilter())
 
 app = FastAPI(
     title="CodeTrace API",
