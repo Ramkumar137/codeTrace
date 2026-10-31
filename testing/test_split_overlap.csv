@@ -1,0 +1,3 @@
+patient_id,group_id,feature,label
+patient-002,group-a,2,1
+patient-003,group-c,3,0

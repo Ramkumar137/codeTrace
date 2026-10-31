@@ -249,9 +249,46 @@
 
         <section class="workspace-section workspace-page hidden" id="audit-section" data-workspace-page="audit">
           <h2>Leakage &amp; Evaluation Audit</h2>
-          <p class="section-description">Potential source patterns for review; these findings do not prove a runtime leak or invalid result.</p>
+          <p class="section-description">Evidence-linked checks identify supported risks and clearly label uncertain review prompts. Static findings do not prove runtime behavior.</p>
+          <p class="finding-summary" id="findings-summary" role="status" aria-live="polite"></p>
+          <div class="finding-filters" aria-label="Filter audit findings">
+            <label for="finding-severity-filter">Severity</label>
+            <select id="finding-severity-filter">
+              <option value="all">All severities</option>
+              <option value="critical">Critical</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+              <option value="informational">Informational</option>
+            </select>
+            <label for="finding-category-filter">Category</label>
+            <select id="finding-category-filter">
+              <option value="all">All categories</option>
+            </select>
+          </div>
           <ul id="findings-list" class="finding-list"></ul>
-          <p class="empty-state hidden" id="findings-empty">No supported audit pattern was detected. This is not proof that the notebook is free of leakage or evaluation issues.</p>
+          <p class="empty-state hidden" id="findings-empty">No findings match these filters. No supported finding is not proof that the notebook is free of leakage or evaluation issues.</p>
+          <section class="workspace-card overlap-card" aria-labelledby="overlap-heading">
+            <h3 id="overlap-heading">Compare explicit train and test datasets</h3>
+            <p class="card-note">Optionally upload the two split CSV files to check exact row and configured identifier/group overlap. Files are compared in memory; raw row values are never returned or retained. Notebook paths are not accessed.</p>
+            <form id="overlap-form" class="overlap-form">
+              <div class="overlap-file-fields">
+                <label for="overlap-train-file">Training split CSV</label>
+                <input id="overlap-train-file" name="train_file" type="file" accept=".csv,text/csv" required>
+                <label for="overlap-test-file">Test split CSV</label>
+                <input id="overlap-test-file" name="test_file" type="file" accept=".csv,text/csv" required>
+              </div>
+              <div class="overlap-identifier-fields">
+                <label for="overlap-identifier-column">Identifier column (optional)</label>
+                <input id="overlap-identifier-column" name="identifier_column" type="text" autocomplete="off" placeholder="e.g. patient_id">
+                <label for="overlap-group-column">Group column (optional)</label>
+                <input id="overlap-group-column" name="group_column" type="text" autocomplete="off" placeholder="e.g. household_id">
+              </div>
+              <button class="btn" id="overlap-submit" type="submit">Compare splits</button>
+              <p class="upload-message hidden" id="overlap-message" role="status" aria-live="polite"></p>
+            </form>
+            <ul id="overlap-results" class="finding-list"></ul>
+          </section>
         </section>
 
         <section class="workspace-section workspace-page hidden" id="cells-section" data-workspace-page="cells">

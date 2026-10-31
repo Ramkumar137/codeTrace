@@ -23,15 +23,9 @@ def _partition_name_matches(names: list[str], partition: str) -> bool:
 
 def analyze_findings(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return findings only for explicitly supported source patterns."""
-    findings: list[dict[str, Any]] = []
-    split_positions = [
-        (operation["cell_index"], operation["line"])
-        for operation in operations
-        if operation["kind"] == "split"
-    ]
+    findings: list[dict[str, Any]] = [    ]
     for operation in operations:
         kind = operation["kind"]
-        name = operation["name"]
         inputs = operation["inputs"]
         finding = None
 
@@ -57,34 +51,9 @@ def analyze_findings(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "caveat": "Identifier names do not establish the underlying data or the purpose of this metric.",
                 "explanation": "The evaluation call's source arguments include an identifier named like a training partition.",
             }
-        elif (
-            kind == "preprocessing"
-            and name in {"fit", "fit_transform"}
-            and any(value.lower() in {"x", "features", "df", "data", "dataset"} for value in inputs)
-            and any(position > (operation["cell_index"], operation["line"]) for position in split_positions)
-        ):
-            finding = {
-                "id": "preprocessing_fit_before_split",
-                "title": "Preprocessing is fitted before a later split",
-                "description": "A full-data-named input is passed to a preprocessing fit before a recognizable split call.",
-                "severity": "medium",
-                "confidence": "medium",
-                "recommendation": "Split first, fit preprocessing on training data only, and apply the fitted transform to held-out data.",
-                "caveat": "The analyzer cannot establish whether the input contains the later test partition or whether this ordering executes as written.",
-                "explanation": "Source order shows a preprocessing fit on a common full-data identifier before a split call.",
-            }
-
         if finding:
             source_ref = operation["source_ref"]
             refs = [source_ref]
-            if finding["id"] == "preprocessing_fit_before_split":
-                refs.extend(
-                    other["source_ref"]
-                    for other in operations
-                    if other["kind"] == "split"
-                    and (other["cell_index"], other["line"])
-                    > (operation["cell_index"], operation["line"])
-                )
             finding.update(
                 {
                     "source_refs": refs,

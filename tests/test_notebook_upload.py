@@ -122,6 +122,36 @@ def test_upload_includes_pipeline_trace_built_from_notebook_source():
     )
 
 
+def test_upload_connects_detection_findings_to_supported_pipeline_nodes():
+    content = notebook_bytes(
+        [
+            nbformat.v4.new_code_cell(
+                'y = df["outcome"]\nX = df[["outcome", "age"]]'
+            ),
+            nbformat.v4.new_code_cell(
+                "X_train, X_test, y_train, y_test = train_test_split(X, y)"
+            ),
+        ]
+    )
+
+    response = upload(content)
+
+    assert response.status_code == 200
+    notebook = response.json()["notebook"]
+    finding = next(
+        item
+        for item in notebook["analysis"]["findings"]
+        if item["rule_id"] == "target_column_in_features"
+    )
+    trace = notebook["analysis"]["pipeline_trace"]
+    assert finding["related_pipeline_node_ids"]
+    assert any(
+        finding["id"] in node["finding_ids"]
+        for node in trace["nodes"]
+        if node["id"] in finding["related_pipeline_node_ids"]
+    )
+
+
 def test_upload_counts_all_supported_cell_types():
     content = notebook_bytes(
         [

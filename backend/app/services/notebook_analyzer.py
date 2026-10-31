@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from backend.app.services.audit_analyzer import analyze_findings
+from backend.app.services.detection_engine import detect_findings
 
 
 ANALYSIS_LIMITATIONS = [
@@ -16,14 +17,15 @@ ANALYSIS_LIMITATIONS = [
     "Potential findings require human review and do not prove leakage or invalid evaluation.",
 ]
 CONFIDENCE_DEFINITIONS = {
-    "high": "The source directly contains the flagged call and a recognizable risky argument.",
-    "medium": "The source contains a recognizable pattern, but its data semantics are uncertain.",
-    "low": "A source-text fallback suggests a pattern that could not be confirmed by Python AST parsing.",
+    "high": "The source directly supports the reported relationship or configured dataset comparison; runtime semantics may still be unknown.",
+    "medium": "The source contains a recognizable pattern, but data semantics or intent remain uncertain.",
+    "low": "A weak, name-based, or context-dependent signal requiring manual review.",
 }
 SEVERITY_DEFINITIONS = {
     "high": "A direct source-pattern concern that should be reviewed promptly; it is not proof of a runtime defect.",
     "medium": "A recognizable pattern with important uncertainty about data contents or execution context.",
     "low": "A weak or fallback-only signal; review manually before drawing conclusions.",
+    "informational": "A context prompt for human review, not a finding that a defect occurred.",
 }
 
 DATASET_READERS = {
@@ -34,6 +36,7 @@ PREPROCESSOR_TYPES = {
     "StandardScaler", "MinMaxScaler", "RobustScaler", "OneHotEncoder",
     "LabelEncoder", "OrdinalEncoder", "SimpleImputer", "ColumnTransformer",
     "Pipeline", "SelectKBest", "SelectFromModel", "RFE", "VarianceThreshold",
+    "PCA", "TruncatedSVD", "KBinsDiscretizer", "SelectPercentile",
     "make_pipeline", "make_union",
 }
 DATA_CLEANERS = {"drop_duplicates", "drop", "replace", "rename"}
@@ -76,6 +79,24 @@ def _variables(node: ast.AST) -> set[str]:
     return {item.id for item in ast.walk(node) if isinstance(item, ast.Name)}
 
 
+def _literal_strings(node: ast.AST) -> set[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return {node.value}
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return set().union(*(_literal_strings(item) for item in node.elts))
+    return set()
+
+
+def _selected_columns(node: ast.AST) -> set[str]:
+    return set().union(
+        *(
+            _literal_strings(item.slice)
+            for item in ast.walk(node)
+            if isinstance(item, ast.Subscript)
+        )
+    )
+
+
 def _source_segment(source: str, node: ast.AST) -> str:
     return ast.get_source_segment(source, node) or ""
 
@@ -98,7 +119,13 @@ def _operation_kind(call: ast.Call) -> str | None:
         return "preprocessing"
     if method == "fit" and isinstance(call.func, ast.Attribute):
         receiver = _name(call.func.value).lower()
-        if any(part in receiver for part in ("scal", "imput", "encod", "vector", "transform", "prep")):
+        if any(
+            part in receiver
+            for part in (
+                "scal", "imput", "encod", "vector", "transform", "prep",
+                "pca", "svd", "select", "discret",
+            )
+        ):
             return "preprocessing"
     if method in PREDICTORS:
         return "prediction"
@@ -130,6 +157,7 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
     )
     parse_fallback_cells: list[int] = []
     dataset_refs: list[dict[str, Any]] = []
+    selection_uses: list[dict[str, Any]] = []
     node_counter = 0
     previous_nodes_by_variable: dict[str, list[str]] = {}
     seen_edges: set[tuple[str, str, str]] = set()
@@ -170,6 +198,17 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
             "cell_index": cell["index"],
             "line": line,
             "source": segment,
+            "receiver": (
+                _name(node.func.value)
+                if isinstance(node.func, ast.Attribute)
+                else None
+            ),
+            "argument_variables": [
+                sorted(_variables(argument)) for argument in node.args
+            ],
+            "keyword_names": [
+                keyword.arg for keyword in node.keywords if keyword.arg
+            ],
             "inputs": sorted(
                 (used_vars - assigned_vars)
                 | (
@@ -286,7 +325,17 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
         }
         operation_by_call: dict[int, dict[str, Any]] = {}
         for item in ordered_nodes:
-            if isinstance(item, ast.Import):
+            if isinstance(item, (ast.If, ast.While)):
+                selection_uses.extend(
+                    {
+                        "variable": variable,
+                        "cell_index": cell["index"],
+                        "line": item.lineno,
+                        "source": _source_segment(source, item.test),
+                    }
+                    for variable in sorted(_variables(item.test))
+                )
+            elif isinstance(item, ast.Import):
                 for alias in item.names:
                     module = alias.name
                     imports.append(
@@ -359,6 +408,7 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
                             "source": segment,
                             "inputs": sorted(input_names),
                             "outputs": sorted(output_names),
+                            "selected_columns": sorted(_selected_columns(value)),
                             "source_ref": source_ref,
                         }
                         operations.append(operation)
@@ -416,7 +466,20 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
                 }:
                     operation["composition_parent_id"] = parent_operation["id"]
 
-    findings.extend(analyze_findings(operations))
+    pipeline_graph = {
+        "nodes": graph_nodes,
+        "edges": graph_edges,
+        "unresolved_references": unresolved_references,
+        "limitations": list(dict.fromkeys(limitations)),
+        "trace_type": "static_inference_not_runtime_trace",
+    }
+    findings = detect_findings(
+        operations,
+        cells,
+        pipeline_graph,
+        analyze_findings(operations),
+        selection_uses,
+    )
     if parse_fallback_cells:
         limitations.append(
             "Python AST parsing failed for code cell(s) "
@@ -442,14 +505,9 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
         "dataset_references": dataset_refs,
         "operations": grouped,
         "all_operations": operations,
-        "pipeline_graph": {
-            "nodes": graph_nodes,
-            "edges": graph_edges,
-            "unresolved_references": unresolved_references,
-            "limitations": list(dict.fromkeys(limitations)),
-            "trace_type": "static_inference_not_runtime_trace",
-        },
+        "pipeline_graph": pipeline_graph,
         "findings": findings,
+        "selection_uses": selection_uses,
         "confidence_definitions": CONFIDENCE_DEFINITIONS,
         "severity_definitions": SEVERITY_DEFINITIONS,
         "analysis_summary": (

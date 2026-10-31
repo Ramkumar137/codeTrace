@@ -8,7 +8,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.models.dataset import DatasetAnalysisResponse
@@ -17,6 +17,7 @@ from backend.app.services.dataset_analyzer import (
     DatasetAnalysisError,
     analyze_csv_dataset,
 )
+from backend.app.services.dataset_overlap import analyze_train_test_overlap
 from backend.app.services.notebook_parser import NotebookParseError, parse_notebook
 
 
@@ -234,3 +235,87 @@ async def analyze_dataset(file: UploadFile | str | None = File(default=None)):
         return {"status": "success", "dataset": dataset}
     finally:
         await file.close()
+
+
+async def _read_overlap_upload(
+    file: UploadFile | str | None, label: str
+) -> tuple[str, bytes]:
+    if file is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": f"missing_{label}_file",
+                "message": f"Select a {label} CSV file.",
+            },
+        )
+    if isinstance(file, str):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": f"missing_{label}_filename",
+                "message": f"The {label} upload must have a filename.",
+            },
+        )
+    if not file.filename or Path(file.filename).suffix.lower() != ".csv":
+        raise HTTPException(
+            status_code=415,
+            detail={
+                "code": "unsupported_file_type",
+                "message": f"The {label} upload must be a .csv file.",
+            },
+        )
+    content = await file.read(MAX_UPLOAD_SIZE_BYTES + 1)
+    if not content:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "empty_file",
+                "message": f"The {label} CSV file is empty.",
+            },
+        )
+    if len(content) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "file_too_large",
+                "message": (
+                    f"The {label} CSV exceeds the configured size limit of "
+                    f"{MAX_UPLOAD_SIZE_BYTES} bytes."
+                ),
+            },
+        )
+    return file.filename, content
+
+
+@app.post("/api/datasets/overlap", tags=["datasets"])
+async def compare_train_test_datasets(
+    train_file: UploadFile | str | None = File(default=None),
+    test_file: UploadFile | str | None = File(default=None),
+    identifier_column: str | None = Form(default=None),
+    group_column: str | None = Form(default=None),
+):
+    """Compare separately uploaded training and test CSVs without saving row values."""
+    files = [file for file in (train_file, test_file) if isinstance(file, UploadFile)]
+    try:
+        train_filename, train_content = await _read_overlap_upload(
+            train_file, "training"
+        )
+        test_filename, test_content = await _read_overlap_upload(test_file, "test")
+        try:
+            result = analyze_train_test_overlap(
+                train_filename,
+                train_content,
+                test_filename,
+                test_content,
+                identifier_column=identifier_column,
+                group_column=group_column,
+            )
+        except DatasetAnalysisError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": error.message},
+            ) from error
+        return {"status": "success", "overlap": result}
+    finally:
+        for file in files:
+            await file.close()

@@ -25,6 +25,12 @@ const datasetUploadBtn = document.getElementById("dataset-upload-btn");
 const datasetUploadMessage = document.getElementById("dataset-upload-message");
 const datasetResults = document.getElementById("dataset-results");
 const datasetColumns = document.getElementById("dataset-columns");
+const overlapForm = document.getElementById("overlap-form");
+const overlapTrainFile = document.getElementById("overlap-train-file");
+const overlapTestFile = document.getElementById("overlap-test-file");
+const overlapSubmit = document.getElementById("overlap-submit");
+const overlapMessage = document.getElementById("overlap-message");
+const overlapResults = document.getElementById("overlap-results");
 let currentNotebook = null;
 let currentPipelineTrace = null;
 let pipelineGraphLayout = null;
@@ -36,11 +42,18 @@ let graphSelectedFindingId = null;
 let healthCheckInProgress = false;
 let uploadInProgress = false;
 let datasetUploadInProgress = false;
+let overlapCheckInProgress = false;
 
 cellSelector.addEventListener("change", () => selectCell(Number(cellSelector.value)));
 
 document.getElementById("graph-type-filters").addEventListener("change", renderPipelineSvg);
 document.getElementById("graph-finding-filter").addEventListener("change", renderPipelineSvg);
+document.getElementById("finding-severity-filter").addEventListener("change", () => {
+  renderFindings(getCurrentFindings());
+});
+document.getElementById("finding-category-filter").addEventListener("change", () => {
+  renderFindings(getCurrentFindings());
+});
 document.getElementById("graph-zoom-in").addEventListener("click", () => zoomPipelineGraph(0.8));
 document.getElementById("graph-zoom-out").addEventListener("click", () => zoomPipelineGraph(1.25));
 document.getElementById("graph-fit").addEventListener("click", fitPipelineGraph);
@@ -55,6 +68,27 @@ document.getElementById("graph-edges").addEventListener("click", (event) => {
   const button = event.target.closest("[data-edge-id]");
   if (button) {
     selectPipelineEdge(button.dataset.edgeId);
+  }
+});
+document.getElementById("findings-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-finding-action]");
+  if (!button) {
+    return;
+  }
+  const finding = getCurrentFindings().find((item) => item.id === button.dataset.findingId);
+  if (!finding) {
+    return;
+  }
+  if (button.dataset.findingAction === "source") {
+    const cellIndex = finding.cell_indices[0];
+    if (Number.isInteger(cellIndex)) {
+      selectCell(cellIndex);
+      window.location.hash = "#cells";
+    }
+  } else if (button.dataset.findingAction === "pipeline") {
+    openFindingPipelineNode(finding, button.dataset.nodeId);
+  } else if (button.dataset.findingAction === "path") {
+    highlightGraphForFinding(finding);
   }
 });
 document.getElementById("graph-inspect-source").addEventListener("click", () => {
@@ -350,6 +384,80 @@ datasetForm.addEventListener("submit", async (event) => {
   }
 });
 
+overlapForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (overlapCheckInProgress) {
+    return;
+  }
+  if (!overlapTrainFile.files[0] || !overlapTestFile.files[0]) {
+    showOverlapMessage("Choose both the training and test CSV files.", "error");
+    return;
+  }
+
+  overlapCheckInProgress = true;
+  overlapSubmit.disabled = true;
+  overlapSubmit.textContent = "Comparing…";
+  overlapResults.replaceChildren();
+  showOverlapMessage("Comparing the uploaded split files in memory…", "loading");
+
+  try {
+    const formData = new FormData(overlapForm);
+    const response = await fetch(`${API_BASE_URL}/api/datasets/overlap`, {
+      method: "POST",
+      body: formData
+    });
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error("The server returned a non-JSON response.");
+    }
+
+    if (!response.ok) {
+      const message = response.status >= 500
+        ? GENERIC_UPLOAD_ERROR
+        : data && data.detail && typeof data.detail.message === "string"
+          ? data.detail.message
+          : "The uploaded CSV files could not be compared.";
+      showOverlapMessage(message, "error");
+      return;
+    }
+    if (!isOverlapSuccessResponse(data)) {
+      showOverlapMessage("The server response did not contain valid overlap results.", "error");
+      return;
+    }
+
+    if (!currentNotebook) {
+      showOverlapMessage("Upload a notebook before adding overlap results to its audit.", "error");
+      return;
+    }
+    currentNotebook.analysis.external_dataset_findings = data.overlap.findings;
+    renderFindings(getCurrentFindings());
+    data.overlap.checks.forEach((check) => {
+      const item = document.createElement("li");
+      item.className = "finding-card";
+      item.textContent = check.status === "completed"
+        ? `${check.check.replaceAll("_", " ")} · ${check.overlap_count} overlapping value(s)`
+        : `${check.check.replaceAll("_", " ")} · skipped: ${check.reason}`;
+      overlapResults.appendChild(item);
+    });
+    const findingCount = data.overlap.findings.length;
+    showOverlapMessage(
+      findingCount
+        ? `Comparison complete. Added ${findingCount} evidence-based dataset finding(s) to this audit.`
+        : "Comparison complete. No overlap was detected by the completed checks.",
+      "success"
+    );
+  } catch (error) {
+    console.error("Train/test dataset comparison failed.", error);
+    showOverlapMessage(GENERIC_UPLOAD_ERROR, "error");
+  } finally {
+    overlapCheckInProgress = false;
+    overlapSubmit.disabled = false;
+    overlapSubmit.textContent = "Compare splits";
+  }
+});
+
 function showUploadMessage(message, state) {
   uploadMessage.textContent = message;
   uploadMessage.className = `upload-message ${state}`;
@@ -358,6 +466,11 @@ function showUploadMessage(message, state) {
 function showDatasetMessage(message, state) {
   datasetUploadMessage.textContent = message;
   datasetUploadMessage.className = `upload-message ${state}`;
+}
+
+function showOverlapMessage(message, state) {
+  overlapMessage.textContent = message;
+  overlapMessage.className = `upload-message ${state}`;
 }
 
 function clearDatasetMessage() {
@@ -457,6 +570,25 @@ function isDatasetSuccessResponse(data) {
   );
 }
 
+function isOverlapSuccessResponse(data) {
+  const overlap = data && data.overlap;
+  return Boolean(
+    data &&
+    data.status === "success" &&
+    overlap &&
+    Array.isArray(overlap.checks) &&
+    Array.isArray(overlap.findings) &&
+    overlap.findings.every((finding) =>
+      finding &&
+      typeof finding.id === "string" &&
+      typeof finding.title === "string" &&
+      typeof finding.category === "string" &&
+      typeof finding.severity === "string" &&
+      Array.isArray(finding.evidence)
+    )
+  );
+}
+
 function renderDatasetAnalysis(dataset) {
   document.getElementById("dataset-summary").textContent =
     `${dataset.filename} · ${dataset.row_count} data row(s) · ${dataset.column_count} column(s)`;
@@ -541,8 +673,15 @@ function renderInvestigation(notebook) {
   document.getElementById("overview-limitations").textContent =
     (analysis.limitations || []).join(" ");
 
+  analysis.external_dataset_findings = [];
+  document.getElementById("finding-severity-filter").value = "all";
+  document.getElementById("finding-category-filter").value = "all";
+  overlapForm.reset();
+  overlapResults.replaceChildren();
+  overlapMessage.textContent = "";
+  overlapMessage.className = "upload-message hidden";
   renderPipelineTrace(analysis.pipeline_trace);
-  renderFindings(analysis.findings);
+  renderFindings(getCurrentFindings());
   renderOverviewCells(notebook.cells);
   renderCells(notebook.cells);
   return true;
@@ -1593,6 +1732,9 @@ function zoomPipelineGraph(factor) {
 }
 
 function highlightGraphForFinding(finding) {
+  if (!currentPipelineTrace) {
+    return;
+  }
   graphSelectedItem = null;
   graphSelectedFindingId = finding.id;
   graphHighlightFindingPaths = true;
@@ -1601,37 +1743,153 @@ function highlightGraphForFinding(finding) {
   window.location.hash = "#pipeline";
 }
 
+function getCurrentFindings() {
+  if (!currentNotebook || !currentNotebook.analysis) {
+    return [];
+  }
+  return [
+    ...(currentNotebook.analysis.findings || []),
+    ...(currentNotebook.analysis.external_dataset_findings || [])
+  ];
+}
+
+function openFindingPipelineNode(finding, nodeId) {
+  if (!currentPipelineTrace || !nodeId) {
+    return;
+  }
+  const node = currentPipelineTrace.nodes.find((item) => item.id === nodeId);
+  if (!node) {
+    return;
+  }
+  document.querySelectorAll("#graph-type-filters input").forEach((checkbox) => {
+    checkbox.checked = true;
+  });
+  document.getElementById("graph-finding-filter").value = "all";
+  graphSelectedFindingId = finding.id;
+  graphHighlightFindingPaths = true;
+  document.getElementById("graph-highlight-findings").setAttribute("aria-pressed", "true");
+  graphSelectedItem = { type: "node", item: node };
+  renderPipelineSvg();
+  window.location.hash = "#pipeline";
+}
+
 function renderFindings(findings) {
   const list = document.getElementById("findings-list");
-  list.replaceChildren();
-  document.getElementById("findings-empty").classList.toggle("hidden", findings.length > 0);
+  const severityFilter = document.getElementById("finding-severity-filter");
+  const categoryFilter = document.getElementById("finding-category-filter");
+  const previousCategory = categoryFilter.value;
+  const categories = [...new Set(findings.map((finding) => finding.category || "other"))].sort();
+  categoryFilter.replaceChildren(new Option("All categories", "all"));
+  categories.forEach((category) => {
+    categoryFilter.add(new Option(category.replaceAll("_", " "), category));
+  });
+  categoryFilter.value = categories.includes(previousCategory) ? previousCategory : "all";
 
-  findings.forEach((finding) => {
+  const counts = findings.reduce((totals, finding) => {
+    totals[finding.severity] = (totals[finding.severity] || 0) + 1;
+    return totals;
+  }, {});
+  const distribution = Object.entries(counts)
+    .map(([severity, count]) => `${count} ${severity}`)
+    .join(" · ");
+  document.getElementById("findings-summary").textContent =
+    `${findings.length} total finding(s)` + (distribution ? ` · ${distribution}` : "");
+
+  const visibleFindings = findings.filter((finding) =>
+    (severityFilter.value === "all" || finding.severity === severityFilter.value) &&
+    (categoryFilter.value === "all" || finding.category === categoryFilter.value)
+  );
+  list.replaceChildren();
+  document.getElementById("findings-empty").classList.toggle("hidden", visibleFindings.length > 0);
+
+  visibleFindings.forEach((finding) => {
     const item = document.createElement("li");
     item.className = "finding-card";
+    item.dataset.findingId = finding.id;
     const heading = document.createElement("h3");
     heading.className = "finding-heading";
     heading.textContent = finding.title;
     const meta = document.createElement("p");
     meta.className = "finding-meta";
-    meta.textContent = `${finding.severity} severity · ${finding.confidence} confidence · potential risk`;
+    meta.textContent =
+      `${finding.category.replaceAll("_", " ")} · ${finding.severity} severity · ` +
+      `${finding.confidence} confidence · ${finding.classification.replaceAll("_", " ")}`;
     const description = document.createElement("p");
     description.className = "finding-description";
     description.textContent = finding.description;
+    const variables = document.createElement("p");
+    variables.className = "finding-meta";
+    variables.textContent = `Relevant variables: ${
+      (finding.related_variables || []).join(", ") || "Not identified"
+    }`;
     const explanation = document.createElement("p");
     explanation.className = "finding-description";
-    explanation.textContent = `${finding.explanation} Recommendation: ${finding.recommendation}`;
-    const caveat = document.createElement("p");
-    caveat.className = "finding-caveat";
-    caveat.textContent = `Limitation: ${finding.caveat}`;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "finding-select";
-    button.textContent = `Highlight finding path · cell${finding.cell_indices.length === 1 ? "" : "s"} ${finding.cell_indices.map((index) => index + 1).join(", ")}`;
-    button.addEventListener("click", () => {
-      highlightGraphForFinding(finding);
+    explanation.textContent = `${finding.risk_explanation || finding.explanation} Recommended correction: ${finding.recommendation}`;
+    item.append(heading, meta, description, variables, explanation);
+
+    const evidence = finding.source_code_evidence || finding.evidence || [];
+    evidence.forEach((reference) => {
+      const evidenceBlock = document.createElement("pre");
+      evidenceBlock.className = "finding-evidence";
+      if (reference.snippet) {
+        evidenceBlock.textContent =
+          `Cell ${Number.isInteger(reference.cell_index) ? reference.cell_index + 1 : "dataset"}` +
+          `${Number.isInteger(reference.line) ? ` · line ${reference.line}` : ""}\n${reference.snippet}`;
+      } else {
+        evidenceBlock.textContent = Object.entries(reference)
+          .map(([key, value]) => `${key.replaceAll("_", " ")}: ${String(value)}`)
+          .join("\n");
+      }
+      item.appendChild(evidenceBlock);
     });
-    item.append(heading, meta, description, explanation, caveat, button);
+
+    const limitations = finding.limitations || (finding.caveat ? [finding.caveat] : []);
+    limitations.forEach((limitation) => {
+      const caveat = document.createElement("p");
+      caveat.className = "finding-caveat";
+      caveat.textContent = `Limitation: ${limitation}`;
+      item.appendChild(caveat);
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "finding-actions";
+    if ((finding.cell_indices || []).length) {
+      const sourceButton = document.createElement("button");
+      sourceButton.type = "button";
+      sourceButton.className = "finding-select";
+      sourceButton.dataset.findingAction = "source";
+      sourceButton.dataset.findingId = finding.id;
+      sourceButton.textContent =
+        `Open source cell${finding.cell_indices.length === 1 ? "" : "s"} ` +
+        finding.cell_indices.map((index) => index + 1).join(", ");
+      actions.appendChild(sourceButton);
+    }
+    (finding.related_pipeline_node_ids || []).forEach((nodeId) => {
+      const node = currentPipelineTrace?.nodes.find((candidate) => candidate.id === nodeId);
+      if (!node) {
+        return;
+      }
+      const nodeButton = document.createElement("button");
+      nodeButton.type = "button";
+      nodeButton.className = "finding-select";
+      nodeButton.dataset.findingAction = "pipeline";
+      nodeButton.dataset.findingId = finding.id;
+      nodeButton.dataset.nodeId = nodeId;
+      nodeButton.textContent = `Open pipeline node · ${node.operation_name}`;
+      actions.appendChild(nodeButton);
+    });
+    if ((finding.related_pipeline_node_ids || []).length) {
+      const pathButton = document.createElement("button");
+      pathButton.type = "button";
+      pathButton.className = "finding-select";
+      pathButton.dataset.findingAction = "path";
+      pathButton.dataset.findingId = finding.id;
+      pathButton.textContent = "Highlight related pipeline path";
+      actions.appendChild(pathButton);
+    }
+    if (actions.childElementCount) {
+      item.appendChild(actions);
+    }
     list.appendChild(item);
   });
 }
@@ -1671,7 +1929,8 @@ document.getElementById("download-report").addEventListener("click", () => {
   }
   const report = {
     notebook: currentNotebook,
-    findings: currentNotebook.analysis.findings,
+    findings: getCurrentFindings(),
+    pipeline_trace: currentNotebook.analysis.pipeline_trace,
     confidence_definitions: currentNotebook.analysis.confidence_definitions,
     severity_definitions: currentNotebook.analysis.severity_definitions,
     limitations: currentNotebook.analysis.limitations

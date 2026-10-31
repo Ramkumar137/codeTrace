@@ -1183,6 +1183,113 @@ main {
   }
 }
 
+.finding-summary {
+  margin: 0 0 12px;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.finding-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin: 0 0 14px;
+}
+
+.finding-filters label,
+.overlap-form label {
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 550;
+}
+
+.finding-filters select,
+.overlap-form input[type="text"] {
+  min-height: 38px;
+  padding: 7px 10px;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid #b9c5d4;
+  border-radius: 6px;
+}
+
+.finding-evidence {
+  overflow: auto;
+  margin: 10px 0;
+  padding: 10px 12px;
+  color: #1d2939;
+  background: #f6f8fb;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.finding-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.finding-actions .finding-select {
+  width: auto;
+  padding: 8px 10px;
+  font-size: 0.83rem;
+}
+
+.overlap-card {
+  margin-top: 22px;
+}
+
+.overlap-card h3 {
+  margin-top: 0;
+}
+
+.overlap-form {
+  display: grid;
+  gap: 12px;
+}
+
+.overlap-file-fields,
+.overlap-identifier-fields {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(0, 1.3fr);
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.overlap-form input[type="file"] {
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.overlap-form .btn {
+  justify-self: start;
+}
+
+#overlap-results {
+  margin-top: 12px;
+}
+
+@media (max-width: 600px) {
+  .overlap-file-fields,
+  .overlap-identifier-fields {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+  }
+
+  .overlap-file-fields input,
+  .overlap-identifier-fields input {
+    margin-bottom: 8px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;

@@ -577,3 +577,72 @@ No dependencies were added, removed, or changed.
 - Detection is limited to operations recognized by the existing analyzer; unknown dependencies remain unresolved rather than guessed.
 - Current audit findings are potential risks, so red confirmed-finding indicators are supported by the graph schema but are not emitted by current audit rules.
 - Graph data is included in the transient upload response; notebooks are not persisted and there is no notebook-ID retrieval endpoint.
+
+## Leakage and Evaluation Detection
+
+**Date completed:** 2026-10-31
+
+### Completed work
+
+1. Extended the existing AST analysis and Phase 2 operation dependencies with bounded, source-grounded checks for preprocessing fitted before a later split, target-derived features, suspicious post-outcome feature names, test metrics used for model selection, test data passed to fitting, training data used for evaluation, and classifier splits without stratification.
+2. Preserved evidence references, confidence, severity, limitations, and links to the relevant pipeline operations. Potential or heuristic findings are not presented as runtime-confirmed defects.
+3. Added `POST /api/datasets/overlap` for explicitly uploaded train/test CSVs. It reports exact-row and user-selected identifier/group overlap counts without returning the values or retaining the uploads.
+4. Extended the existing Audit workspace with severity/category filtering, finding evidence, source-cell and pipeline-node navigation, and the optional split-comparison form.
+5. Fixed the overlap-response validator's scope so the successful comparison response is handled by the browser UI.
+6. Documented the supported rules, API, response semantics, and analysis limitations in README.md.
+
+### Existing functionality reused
+
+- Reused the notebook parser and AST-extracted operations, Phase 2 dependency graph, upload response, and existing audit findings.
+- Reused the FastAPI multipart endpoint patterns, configured per-file upload limit, and existing notebook workspace and light theme.
+- Notebook code and notebook-referenced paths remain unexecuted and unopened. Dataset comparison occurs only when the user explicitly uploads both CSV files.
+
+### Files created
+
+| Path | Purpose |
+|---|---|
+| `backend/app/services/detection_engine.py` | Adds source/dependency-based notebook leakage and evaluation checks. |
+| `backend/app/services/dataset_overlap.py` | Performs in-memory split overlap checks without returning raw values. |
+| `tests/test_detection_engine.py` | Tests supported risk patterns and negative cases. |
+| `tests/test_dataset_overlap.py` | Tests overlap endpoint checks and validation. |
+| `testing/train_split_overlap.csv` | Synthetic training split for overlap validation. |
+| `testing/test_split_overlap.csv` | Synthetic test split for overlap validation. |
+
+### Files modified
+
+| Path | Change |
+|---|---|
+| `backend/app/main.py` | Adds the train/test CSV overlap endpoint. |
+| `backend/app/services/audit_analyzer.py` | Removes the overly broad preprocessing signal in favor of dependency-aware detection. |
+| `backend/app/services/notebook_analyzer.py` | Records AST evidence used by the detection engine and attaches findings to the existing analysis. |
+| `frontend/index.html` | Adds audit filters, finding navigation, and split-comparison controls. |
+| `frontend/js/app.js` | Adds audit rendering and comparison behavior; moves the overlap response validator to top-level scope. |
+| `frontend/css/style.css` | Styles the audit and comparison UI within the existing theme. |
+| `tests/test_notebook_upload.py` | Covers findings in upload analysis and pipeline association. |
+| `README.md` | Documents detection rules, endpoint behavior, and limitations. |
+| `completion.md` | Records this completed phase and its verification. |
+
+### Dependencies
+
+No dependencies were added, removed, or changed.
+
+### Verification results
+
+| Check | Actual result |
+|---|---|
+| `.\venv\Scripts\python.exe -m pytest -q` | **79 passed, 0 failed**; one existing Starlette/AnyIO deprecation warning. |
+| `node --check frontend\js\app.js` | Passed. |
+| `.\venv\Scripts\python.exe -m compileall -q backend\app` | Passed. |
+| `git diff --check` | Passed; Git reported line-ending conversion warnings only. |
+| Browser: preprocessing-before-split notebook | Passed; one potential finding displayed with evidence; source-cell navigation opened Cell 3 and pipeline-node navigation selected the associated finding node. |
+| Browser: audit filters and graph finding filter | Passed; severity filters selected the expected counts and graph filtering displayed the two finding-associated operations. |
+| Browser: uploaded split comparison | Passed; exact row overlap 0, identifier overlap 1, group overlap 1; identifiers/group values were absent from the UI response. |
+| Browser: overlap response validation | Passed; `isOverlapSuccessResponse` was available and the comparison completed successfully. |
+
+### Known limitations
+
+- Static checks infer risks from recognizable AST patterns, source order, variable references, and limited name heuristics; they cannot establish runtime data contents, execution order, intent, or all aliases/control flow.
+- Stratification is an informational review prompt; class balance and suitability are unknown.
+- Dataset overlap is separate from notebook analysis because notebook-referenced files are not accessed and uploads are not persisted. Identifier/group semantics are supplied by the user.
+- Exact duplicate feature rows alone do not prove entity leakage. The endpoint reports counts only and processes files in memory.
+- Findings remain potential risks or review prompts; no rule in this phase confirms a runtime defect.
