@@ -32,7 +32,9 @@ const overlapSubmit = document.getElementById("overlap-submit");
 const overlapMessage = document.getElementById("overlap-message");
 const overlapResults = document.getElementById("overlap-results");
 let currentNotebook = null;
+let currentNotebookFile = null;
 let currentPipelineTrace = null;
+let repairDecisions = new Map();
 let pipelineGraphLayout = null;
 let graphViewBox = null;
 let graphInitialViewBox = null;
@@ -90,6 +92,15 @@ document.getElementById("findings-list").addEventListener("click", (event) => {
   } else if (button.dataset.findingAction === "path") {
     highlightGraphForFinding(finding);
   }
+});
+document.getElementById("repairs-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-repair-action]");
+  if (!button) {
+    return;
+  }
+  const repairId = button.dataset.repairId;
+  repairDecisions.set(repairId, button.dataset.repairAction);
+  renderRepairCenter(getCurrentRepairProposals());
 });
 document.getElementById("graph-inspect-source").addEventListener("click", () => {
   if (graphSelectedItem && graphSelectedItem.type === "node") {
@@ -186,7 +197,7 @@ function showRoute() {
   if (workspaceRoute === "inspect") {
     workspaceRoute = currentNotebook ? "summary" : "upload";
   }
-  const validWorkspaceRoutes = ["summary", "overview", "pipeline", "audit", "cells", "evidence"];
+  const validWorkspaceRoutes = ["summary", "overview", "pipeline", "audit", "repairs", "cells", "evidence"];
   if (!validWorkspaceRoutes.includes(workspaceRoute)) {
     workspaceRoute = currentNotebook ? "summary" : "upload";
   }
@@ -292,9 +303,13 @@ uploadForm.addEventListener("submit", async (event) => {
     }
 
     currentNotebook = data.notebook;
+    currentNotebookFile = selectedFile;
+    repairDecisions = new Map();
     showNotebookSummary(data.notebook);
     if (!renderInvestigation(data.notebook)) {
       currentNotebook = null;
+      currentNotebookFile = null;
+      repairDecisions = new Map();
       showUploadMessage("Notebook parsed, but the analysis response was incomplete.", "error");
       return;
     }
@@ -433,6 +448,7 @@ overlapForm.addEventListener("submit", async (event) => {
     }
     currentNotebook.analysis.external_dataset_findings = data.overlap.findings;
     renderFindings(getCurrentFindings());
+    renderRepairCenter(getCurrentRepairProposals());
     data.overlap.checks.forEach((check) => {
       const item = document.createElement("li");
       item.className = "finding-card";
@@ -682,6 +698,7 @@ function renderInvestigation(notebook) {
   overlapMessage.className = "upload-message hidden";
   renderPipelineTrace(analysis.pipeline_trace);
   renderFindings(getCurrentFindings());
+  renderRepairCenter(getCurrentRepairProposals());
   renderOverviewCells(notebook.cells);
   renderCells(notebook.cells);
   return true;
@@ -1893,6 +1910,210 @@ function renderFindings(findings) {
     list.appendChild(item);
   });
 }
+
+function renderRepairCenter(repairs) {
+  const list = document.getElementById("repairs-list");
+  list.replaceChildren();
+  document.getElementById("repair-total-findings").textContent = String(repairs.length);
+  document.getElementById("repairable-findings").textContent = String(
+    repairs.filter((repair) => repair.repair_status === "automatically_repairable").length
+  );
+  document.getElementById("manual-findings").textContent = String(
+    repairs.filter((repair) => repair.repair_status !== "automatically_repairable").length
+  );
+  document.getElementById("repairs-empty").classList.toggle("hidden", repairs.length > 0);
+  document.getElementById("repairs-status").textContent = repairs.length
+    ? "Every finding has a repair classification. Approve only proposals you have reviewed."
+    : "No findings were returned by the source analysis.";
+
+  repairs.forEach((repair) => {
+    const card = document.createElement("article");
+    card.className = "workspace-card repair-card";
+    const heading = document.createElement("h3");
+    heading.textContent = repair.finding_title || repair.finding_id;
+    const status = document.createElement("p");
+    status.className = "repair-status";
+    status.textContent =
+      `${(repair.repair_status || "unknown").replaceAll("_", " ")} · ` +
+      `${(repair.validation_status || "not validated").replaceAll("_", " ")}`;
+    const category = document.createElement("p");
+    category.className = "finding-meta";
+    category.textContent =
+      `${(repair.finding_category || "other").replaceAll("_", " ")} · ` +
+      `cell${repair.affected_cells.length === 1 ? "" : "s"} ` +
+      (repair.affected_cells.length
+        ? repair.affected_cells.map((index) => index + 1).join(", ")
+        : "not identified");
+    const explanation = document.createElement("p");
+    explanation.className = "finding-description";
+    explanation.textContent = repair.explanation || repair.reason || "";
+    card.append(heading, status, category, explanation);
+
+    const validation = document.createElement("p");
+    validation.className = "finding-caveat";
+    validation.textContent = `Validation: ${Object.entries(repair.validation || {})
+      .map(([name, value]) => `${name.replaceAll("_", " ")} — ${String(value)}`)
+      .join("; ") || "not available"}. Experiment verification was not performed.`;
+    card.appendChild(validation);
+
+    (repair.limitations || []).forEach((limitation) => {
+      const note = document.createElement("p");
+      note.className = "finding-caveat";
+      note.textContent = `Limitation: ${limitation}`;
+      card.appendChild(note);
+    });
+
+    (repair.cell_changes || []).forEach((change) => {
+      const originalLabel = document.createElement("h4");
+      originalLabel.textContent = `Original code · cell ${change.cell_index + 1}`;
+      const original = document.createElement("pre");
+      original.className = "repair-code";
+      original.textContent = change.original_code;
+      const correctedLabel = document.createElement("h4");
+      correctedLabel.textContent = `Proposed code · cell ${change.cell_index + 1}`;
+      const corrected = document.createElement("pre");
+      corrected.className = "repair-code";
+      corrected.textContent = change.corrected_code;
+      const diffLabel = document.createElement("h4");
+      diffLabel.textContent = "Code changes";
+      const diff = document.createElement("pre");
+      diff.className = "repair-diff";
+      diff.textContent = formatRepairDiff(change.original_code, change.corrected_code);
+      card.append(originalLabel, original, correctedLabel, corrected, diffLabel, diff);
+    });
+
+    if (repair.repair_status === "automatically_repairable") {
+      const actions = document.createElement("div");
+      actions.className = "finding-actions";
+      const decision = repairDecisions.get(repair.repair_id);
+      const approve = document.createElement("button");
+      approve.type = "button";
+      approve.className = "btn";
+      approve.dataset.repairAction = "approved";
+      approve.dataset.repairId = repair.repair_id;
+      approve.textContent = decision === "approved" ? "Approved" : "Approve repair";
+      approve.setAttribute("aria-pressed", String(decision === "approved"));
+      const reject = document.createElement("button");
+      reject.type = "button";
+      reject.className = "text-button";
+      reject.dataset.repairAction = "rejected";
+      reject.dataset.repairId = repair.repair_id;
+      reject.textContent = decision === "rejected" ? "Rejected" : "Reject repair";
+      reject.setAttribute("aria-pressed", String(decision === "rejected"));
+      actions.append(approve, reject);
+      card.appendChild(actions);
+    }
+    list.appendChild(card);
+  });
+
+  const approvedCount = [...repairDecisions.values()].filter((item) => item === "approved").length;
+  document.getElementById("download-repaired-notebook").disabled = approvedCount === 0;
+}
+
+function getCurrentRepairProposals() {
+  if (!currentNotebook?.analysis) {
+    return [];
+  }
+  const notebookRepairs = currentNotebook.analysis.repairs || [];
+  const datasetRepairs = (currentNotebook.analysis.external_dataset_findings || []).map((finding) => ({
+    repair_id: `dataset-${finding.id}`,
+    finding_id: finding.id,
+    finding_category: finding.category,
+    finding_title: finding.title,
+    repair_status: "requires_manual_intervention",
+    validation_status: "not_applicable",
+    affected_cells: [],
+    cell_changes: [],
+    explanation: "This dataset comparison result is not linked to a notebook split statement. Review the split and entity/group semantics manually.",
+    reason: finding.recommendation,
+    validation: {
+      python_syntax: "not_run",
+      variable_references: "not_run",
+      finding_pattern: "not_addressed",
+      experiment_verification: "not_performed"
+    },
+    limitations: finding.limitations || []
+  }));
+  return [...notebookRepairs, ...datasetRepairs];
+}
+
+function formatRepairDiff(original, corrected) {
+  const before = original.split(/\r?\n/);
+  const after = corrected.split(/\r?\n/);
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  const removed = before.slice(prefix, before.length - suffix);
+  const added = after.slice(prefix, after.length - suffix);
+  return [
+    ...removed.map((line) => `- ${line}`),
+    ...added.map((line) => `+ ${line}`)
+  ].join("\n");
+}
+
+document.getElementById("download-repaired-notebook").addEventListener("click", async (event) => {
+  const message = document.getElementById("repair-download-message");
+  const approvedIds = [...repairDecisions.entries()]
+    .filter(([, decision]) => decision === "approved")
+    .map(([repairId]) => repairId);
+  if (!currentNotebookFile || !approvedIds.length) {
+    message.textContent = "Approve at least one repair before generating a notebook.";
+    message.className = "upload-message error";
+    return;
+  }
+
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = "Generating…";
+  message.textContent = "Validating approved changes and generating a separate notebook…";
+  message.className = "upload-message loading";
+  try {
+    const formData = new FormData();
+    formData.append("file", currentNotebookFile);
+    formData.append("repair_ids", JSON.stringify(approvedIds));
+    const response = await fetch(`${API_BASE_URL}/api/notebooks/repairs/generate`, {
+      method: "POST",
+      body: formData
+    });
+    if (!response.ok) {
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+      const errorMessage = data?.detail?.message || "The corrected notebook could not be generated.";
+      throw new Error(errorMessage);
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${currentNotebook.filename.replace(/\.ipynb$/i, "")}-repaired.ipynb`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    message.textContent = "Corrected notebook downloaded. The uploaded original was not changed.";
+    message.className = "upload-message success";
+  } catch (error) {
+    message.textContent = error instanceof Error ? error.message : "The corrected notebook could not be generated.";
+    message.className = "upload-message error";
+  } finally {
+    button.textContent = "Generate corrected notebook";
+    renderRepairCenter(getCurrentRepairProposals());
+  }
+});
 
 function renderCells(cells) {
   cellSelector.replaceChildren();

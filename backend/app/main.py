@@ -5,10 +5,12 @@ FastAPI application with health checks and validated notebook upload.
 """
 
 import logging
+import json
 import os
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.models.dataset import DatasetAnalysisResponse
@@ -19,6 +21,7 @@ from backend.app.services.dataset_analyzer import (
 )
 from backend.app.services.dataset_overlap import analyze_train_test_overlap
 from backend.app.services.notebook_parser import NotebookParseError, parse_notebook
+from backend.app.services.repair_engine import RepairError, generate_corrected_notebook
 
 
 DEFAULT_MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
@@ -156,6 +159,109 @@ async def upload_notebook(file: UploadFile | str | None = File(default=None)):
             ) from error
 
         return {"status": "success", "notebook": notebook}
+    finally:
+        await file.close()
+
+
+@app.post(
+    "/api/notebooks/repairs/generate",
+    tags=["notebooks"],
+)
+async def generate_notebook_repairs(
+    file: UploadFile | str | None = File(default=None),
+    repair_ids: str = Form(default="[]"),
+):
+    """Generate a separate notebook from explicitly approved deterministic repairs."""
+    if file is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "missing_file", "message": "Select the original notebook file."},
+        )
+    if isinstance(file, str):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "missing_filename", "message": "The notebook file needs a filename."},
+        )
+
+    try:
+        filename = file.filename
+        if not filename or not filename.strip():
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "missing_filename", "message": "The notebook file needs a filename."},
+            )
+        if Path(filename).suffix.lower() != ".ipynb":
+            raise HTTPException(
+                status_code=415,
+                detail={
+                    "code": "unsupported_file_type",
+                    "message": "Only files with the .ipynb extension are accepted.",
+                },
+            )
+        content = await file.read(MAX_UPLOAD_SIZE_BYTES + 1)
+        if not content:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "empty_file", "message": "The uploaded notebook is empty."},
+            )
+        if len(content) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "code": "file_too_large",
+                    "message": (
+                        "The uploaded notebook exceeds the configured size limit of "
+                        f"{MAX_UPLOAD_SIZE_BYTES} bytes."
+                    ),
+                },
+            )
+
+        try:
+            selected_ids = json.loads(repair_ids)
+        except json.JSONDecodeError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_repair_ids", "message": "Repair selections must be valid JSON."},
+            ) from error
+        if (
+            not isinstance(selected_ids, list)
+            or not selected_ids
+            or any(not isinstance(item, str) for item in selected_ids)
+            or len(selected_ids) != len(set(selected_ids))
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_repair_ids",
+                    "message": "Approve one or more distinct repair IDs.",
+                },
+            )
+
+        try:
+            parse_notebook(filename, content)
+            corrected_content, corrected_filename = generate_corrected_notebook(
+                content, filename, selected_ids
+            )
+        except NotebookParseError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": error.message},
+            ) from error
+        except RepairError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": error.message},
+            ) from error
+
+        return Response(
+            content=corrected_content,
+            media_type="application/x-ipynb+json",
+            headers={
+                "Content-Disposition": (
+                    f"attachment; filename*=UTF-8''{quote(corrected_filename)}"
+                )
+            },
+        )
     finally:
         await file.close()
 

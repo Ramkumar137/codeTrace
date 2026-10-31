@@ -1668,3 +1668,73 @@ main {
     width: 100%;
   }
 }
+
+.repair-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.repair-summary > div {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.repair-summary span {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.repair-summary strong {
+  font-size: 1.4rem;
+}
+
+.repair-list {
+  display: grid;
+  gap: 16px;
+}
+
+.repair-card h3,
+.repair-card h4 {
+  margin-top: 0;
+}
+
+.repair-status {
+  color: var(--accent);
+  font-weight: 650;
+  text-transform: capitalize;
+}
+
+.repair-code,
+.repair-diff {
+  overflow: auto;
+  max-height: 420px;
+  padding: 14px;
+  background: #f5f7fa;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.repair-diff {
+  background: #fbfcfe;
+}
+
+.repair-download-actions {
+  margin-top: 18px;
+}
+
+@media (max-width: 540px) {
+  .repair-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

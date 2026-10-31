@@ -36,6 +36,8 @@ The current implementation validates and parses notebooks, identifies a defined 
 | Interactive pipeline dependency map with node/edge inspection and filters | Implemented; static evidence only |
 | Evidence-linked checks for preprocessing, target, test-set, and evaluation risks | Implemented; bounded static rules |
 | Explicit train/test CSV overlap checks | Implemented; caller supplies both splits and optional identifier/group columns |
+| Deterministic repair proposals and separately generated corrected notebooks | Implemented for narrow, validated preprocessing and literal target-column patterns |
+| User approval/rejection before repair generation | Implemented in the Repair Center; decisions remain in the current browser session |
 | Cell Explorer and downloadable JSON evidence report | Implemented |
 | Comprehensive or runtime-verified leakage/data-flow detection | Not implemented |
 | Dataset-aware notebook linkage, runtime tracing, and benchmark evaluation | Not implemented |
@@ -56,13 +58,14 @@ The current implementation validates and parses notebooks, identifies a defined 
 
 The application has a static frontend and a FastAPI backend:
 
-- **Frontend:** vanilla HTML, CSS, and JavaScript provide Inspect/About navigation, an automatic health indicator, notebook upload, Overview, Pipeline Trace, Leakage & Evaluation Audit, Cell Explorer, and evidence-report download.
+- **Frontend:** vanilla HTML, CSS, and JavaScript provide Inspect/About navigation, an automatic health indicator, notebook upload, Overview, Pipeline Trace, Leakage & Evaluation Audit, Repair Center, Cell Explorer, and evidence-report download.
 - **API and validation:** `backend/app/main.py` exposes root and health endpoints plus `POST /api/notebooks/upload`. Uploads are bounded to 10 MiB by default, validated, processed in memory, and not saved.
 - **Dataset analysis:** `POST /api/datasets/analyze` accepts a separately selected UTF-8 CSV (using the same upload-size limit) and returns aggregate row/column counts, inferred column types, missing-value counts, and numeric summaries. `POST /api/datasets/overlap` accepts explicitly selected training and test CSVs, compares exact rows and optional caller-selected identifier/group columns in memory, and never returns raw values.
 - **Notebook parser:** `backend/app/services/notebook_parser.py` checks JSON and nbformat v4 structure and extracts ordered cell source, type, saved execution count, and output presence.
 - **Static analyzer:** `backend/app/services/notebook_analyzer.py` uses Python AST without executing source. It extracts recognizable imports, data-read paths, feature transformations, splits, model construction, fitting, prediction, and evaluation operations.
 - **Pipeline trace:** `backend/app/services/pipeline_trace.py` converts those extracted operations and audit findings into a stable, source-referenced graph in `notebook.analysis.pipeline_trace`; it does not re-parse or execute notebook code.
 - **Detection engine:** `backend/app/services/audit_analyzer.py` retains the initial fit/evaluation source checks; `backend/app/services/detection_engine.py` adds context/dependency-based preprocessing, target, test-selection, and classification-split review rules. Findings carry categories, source evidence, variable and graph references, confidence, severity, recommendations, and limitations.
+- **Repair engine:** `backend/app/services/repair_engine.py` classifies each notebook finding and creates deterministic proposals only for a narrowly recognized train/test preprocessing rewrite or direct literal target-column selection. The Repair Center shows original/proposed code, changes, evidence-based limitations, and validation; users must approve each proposal before a separate corrected notebook can be downloaded.
 - **Dataset overlap:** `backend/app/services/dataset_overlap.py` compares two CSV uploads, reports exact duplicated rows and configured identifier/group overlap counts, and does not expose values or persist records.
 - **Response models:** `backend/app/models/notebook.py` documents the parsed notebook and nested analysis response.
 - **Tests:** pytest tests exercise upload validation, AST extraction, graph links, findings, fallback behavior, and non-execution of untrusted source.
@@ -71,7 +74,7 @@ There is no database, permanent file storage, or notebook execution.
 
 ## End-to-End Workflow
 
-**Available workflow:** start the API and serve the static frontend. The About page is the default landing page when opened without a route; choose Inspect Notebook when ready to upload. The top navigation stays visible while the rest of the page scrolls. The header symbol checks `/api/health` on load and every 15 seconds. Choose and upload a notebook; after successful validation, the upload form is replaced by a notebook summary and separate navigation buttons for Overview, Pipeline Trace, Leakage & Evaluation Audit, Cell Explorer, and Evidence Report. Each button opens its own focused view rather than appending every section to one long page. Overview shows imported library names, individual imports, notebook dataset path references, recognized operations, and every notebook cell's source in notebook order. It also lets you separately upload a CSV for aggregate dataset profiling; notebook-referenced paths are never opened. Pipeline Trace displays an interactive dependency graph generated from the notebook analysis response. Zoom, pan, fit/reset, operation-type and finding-status filters, node/edge selection, upstream/downstream highlighting, and finding-path highlighting are available. Use Notebook summary to return to the summary, or Choose another notebook to start a fresh upload. The feature pages also show potential audit findings and their evidence, notebook source cells, or a downloadable JSON report.
+**Available workflow:** start the API and serve the static frontend. The About page is the default landing page when opened without a route; choose Inspect Notebook when ready to upload. The top navigation stays visible while the rest of the page scrolls. The header symbol checks `/api/health` on load and every 15 seconds. Choose and upload a notebook; after successful validation, the upload form is replaced by a notebook summary and separate navigation buttons for Overview, Pipeline Trace, Leakage & Evaluation Audit, Repair Center, Cell Explorer, and Evidence Report. Each button opens its own focused view rather than appending every section to one long page. Overview shows imported library names, individual imports, notebook dataset path references, recognized operations, and every notebook cell's source in notebook order. It also lets you separately upload a CSV for aggregate dataset profiling; notebook-referenced paths are never opened. Pipeline Trace displays an interactive dependency graph generated from the notebook analysis response. Zoom, pan, fit/reset, operation-type and finding-status filters, node/edge selection, upstream/downstream highlighting, and finding-path highlighting are available. In Repair Center, inspect the original and proposed code, diff, explanation, and validation; approve or reject proposals individually. Only explicitly approved, validated notebook repairs can be submitted to generate a separate corrected file. Dataset overlap findings remain manual because they are not linked to notebook split source. Use Notebook summary to return to the summary, or Choose another notebook to start a fresh upload.
 
 ### Static analysis coverage
 
@@ -107,6 +110,19 @@ The response contains overlap counts, filenames, check status, caveats, and find
 Notebook findings are generated from the already parsed cell AST, extracted operation arguments, and Phase 2 dependency graph; detection does not execute code or load referenced paths. Each finding includes a unique `id`, stable `rule_id`, category, severity, confidence, classification, source references/snippets, related variables, related pipeline node IDs, explanation, recommendation, and detection limitations. Dataset overlap findings use dataset evidence and intentionally have no notebook cell or graph node.
 
 `source_evidence` means the source directly shows a suspicious construction; `potential_risk` means data semantics or intent remain uncertain; `heuristic_suspicion` means a name-based signal requiring manual review; `informational_review` is not a defect finding. High/medium/low confidence describes evidence support rather than probability. Informational severity is a review prompt. No current rule claims a runtime-confirmed defect, so graph findings remain amber rather than red.
+
+### Automated repair proposals
+
+The parser adds `notebook.analysis.repairs`, a repair classification corresponding to each notebook finding. The separate `backend/app/services/repair_engine.py` consumes the source cells and Phase 3 findings; it does not duplicate detection or execute notebook code. Repair IDs are stable for the finding and template. Supported deterministic proposals are deliberately narrow:
+
+- **Preprocessing leakage:** move a single recognized scaler/imputer/PCA `fit_transform` result out of a simple `train_test_split` input, split the raw feature variable instead, fit the existing transformer on `X_train`, and transform `X_test`. The transformer must have a recognized scikit-learn import, the split must expose the expected `X_train`/`X_test` outputs, and the transformed value must not have unrelated uses.
+- **Direct target-column leakage:** remove an exact string column from a simple, single-line literal feature-column list only when a preceding assignment selects that same dataframe column for a conventional target variable and another feature remains. Commented or multi-line lists remain manual.
+
+Each proposal includes its finding ID/category, affected zero-based cells, original and corrected source, a human-readable change explanation, affected variables/dependencies, validation results, and limitations. Other recognized Phase 3 findings—including target-derived feature construction, suspicious feature names, test-set selection/contamination, and insufficiently specified group overlap—are classified for manual intervention. Unknown rules are marked not repairable with current evidence. Dataset overlap findings are included in the frontend Repair Center as manual-only because the separately uploaded CSVs are not tied to notebook split statements.
+
+Before a supported proposal is offered, the engine parses modified Python cells, checks that the rewrite introduces no new identifiers, re-runs the relevant static finding rule, and rejects ambiguous or overlapping edits. The notebook parser has already validated the uploaded nbformat v4 document. At generation, only explicitly approved repair IDs are re-derived from the uploaded original and applied; selected repairs that affect the same cell are rejected. The output is validated with `nbformat`, preserves notebook/cell metadata and order, clears outputs and execution counts only for modified code cells, and is named `<original>-repaired.ipynb`. The uploaded original is never changed or stored. The API request is stateless; the browser retains the original upload and approval/rejection decisions only for the current page session.
+
+Validation does **not** establish semantic correctness or successful experiment behavior. This phase does not install missing dependencies, infer group identifiers, change test-driven model selection, construct validation workflows, remove duplicates, or automatically repair ambiguous target leakage. No notebook is executed and no experiment verification is claimed.
 
 ### Graph contract and interpretation
 
@@ -194,16 +210,17 @@ CodeTrace/
 │   ├── css/
 │   │   └── style.css       # Responsive light theme
 │   └── js/
-│       └── app.js          # Health, upload, workspace, and report UI
+│       └── app.js          # Health, upload, workspace, repair, and report UI
 ├── backend/
 │   └── app/
-│       ├── main.py         # FastAPI health, notebook, and dataset endpoints
+│       ├── main.py         # FastAPI health, notebook, dataset, and repair endpoints
 │       ├── services/
 │       │   ├── notebook_parser.py # nbformat validation and extraction
 │   │   ├── notebook_analyzer.py # AST metadata and pipeline operations
 │   │   ├── pipeline_trace.py # Source-evidence dependency graph builder
 │       │   ├── detection_engine.py # Notebook leakage/evaluation rules
 │       │   ├── dataset_overlap.py # Explicit train/test CSV comparison
+│       │   ├── repair_engine.py # Finding classification, source transforms, validation
 │       │   ├── audit_analyzer.py # Initial source-pattern audit rules
 │       │   └── dataset_analyzer.py # Explicit CSV profiling
 │       ├── api/            # Package scaffold
@@ -218,7 +235,8 @@ CodeTrace/
 │   ├── test_detection_engine.py # Leakage/evaluation rule tests
 │   ├── test_pipeline_trace.py # Pipeline graph shape/dependency tests
 │   ├── test_dataset_analysis.py # CSV profile tests
-│   └── test_dataset_overlap.py # Train/test overlap tests
+│   ├── test_dataset_overlap.py # Train/test overlap tests
+│   └── test_repair_engine.py # Repair proposals, validation, conflicts, generation
 ├── testing/
 │   ├── clean_ml_workflow.ipynb
 │   ├── mixed_cells_syntax_fallback.ipynb
@@ -301,10 +319,11 @@ The API will be available at `http://127.0.0.1:8000`. From the project root, `.\
 | `GET /` | Confirms the API is running | `{"status":"ok","message":"CodeTrace API is running."}` |
 | `GET /api/health` | Health check consumed by the frontend | `{"status":"healthy","service":"CodeTrace API"}` |
 | `POST /api/notebooks/upload` | Validates and statically inspects one notebook | Notebook summary, source-only cell metadata, analysis, graph, and potential findings |
+| `POST /api/notebooks/repairs/generate` | Accepts the original notebook and approved repair IDs | Separate validated `.ipynb` attachment; original remains unchanged |
 | `POST /api/datasets/analyze` | Profiles one explicitly uploaded CSV for the request | Dataset dimensions and aggregate per-column profile; no row values |
 | `POST /api/datasets/overlap` | Compares explicitly uploaded train/test CSVs | Exact-row and configured identifier/group overlap counts; no row values |
 
-The upload endpoints do not authenticate callers and do not retain uploaded files. FastAPI's interactive documentation is available at `http://127.0.0.1:8000/docs` while the local server is running.
+The upload endpoints do not authenticate callers and do not retain uploaded files. `POST /api/notebooks/repairs/generate` expects multipart `file` and `repair_ids` fields, where `repair_ids` is a JSON array of repair IDs from that notebook's analysis response. FastAPI's interactive documentation is available at `http://127.0.0.1:8000/docs` while the local server is running.
 
 **Expected response from `GET /api/health`:**
 
@@ -447,7 +466,7 @@ Then open `http://127.0.0.1:5500` in your browser.
 .\venv\Scripts\python.exe -m pytest tests\ -v
 ```
 
-The tests cover the root and health endpoints, notebook and CSV upload validation, CSV schema/type/missingness/numeric summaries, source-only overlap comparison, AST extraction, graph links, leakage/evaluation rules, clean and flawed examples, parse fallback, and non-execution of suspicious notebook source. Run the suite to see current results.
+The tests cover root and health endpoints, upload validation, static notebook analysis, graph links, leakage/evaluation findings, dataset profiles/overlap, repair classification, positive and negative repair patterns, conflicts, notebook metadata/output handling, and repaired-notebook generation. Run the suite to see current results.
 
 ---
 
@@ -460,9 +479,10 @@ The tests cover the root and health endpoints, notebook and CSV upload validatio
 5. Upload `testing/sample_notebook.ipynb` or another valid notebook.
 6. In Overview, optionally upload `testing/sample_dataset.csv` to review its measured row count, column types, missing values, and numeric summaries.
 7. In Leakage & Evaluation Audit, optionally upload separate training/test CSV files and configure identifier/group columns for overlap checks.
-8. Review Pipeline Trace, Leakage & Evaluation Audit, and Cell Explorer. Confirm graph links are labeled as inferred and source is shown as text.
-9. Download the evidence report and inspect its notebook details, notebook and dataset findings, graph, definitions, and limitations.
-10. Stop the backend — within the next health check, the symbol should turn red. An upload attempt should show a connection error.
+8. Review Pipeline Trace, Leakage & Evaluation Audit, Repair Center, and Cell Explorer. Confirm graph links are labeled as inferred and source is shown as text.
+9. In Repair Center, compare the proposed code and diff, reject or explicitly approve a proposal, and generate a separate corrected notebook. Confirm the original upload is unchanged.
+10. Download the evidence report and inspect its notebook details, notebook and dataset findings, graph, definitions, and limitations.
+11. Stop the backend — within the next health check, the symbol should turn red. An upload attempt should show a connection error.
 
 ---
 
@@ -472,6 +492,7 @@ The tests cover the root and health endpoints, notebook and CSV upload validatio
 - AST analysis covers common Python syntax and selected patterns. Syntax-error cells receive a limited source-text fallback or remain unresolved.
 - Variable-name matches do not prove value relationships. Control flow, branches, dynamic aliases, reassignment semantics, and target-derived feature leakage are not comprehensively analyzed.
 - Audit results require human review. Exact row duplicates are not proof of same-entity overlap; identifier semantics depend on user configuration. No labeled benchmark or measured precision/recall is available.
+- Repair templates support only simple source patterns. Target-derived features, group-aware splits, test-set-driven tuning, complex preprocessing, and multiple conflicting edits require manual changes. Syntax, static-rule, and nbformat validation do not prove a repair correct; no repaired notebook is executed.
 - Notebook-referenced datasets are not loaded. CSV profiling is aggregate-only; overlap analysis compares only separately uploaded split files and does not infer notebook-to-file correspondence. Saved notebook output payloads are omitted and notebook code is never executed.
 - The frontend API base URL is configured in `frontend/js/app.js`.
 - CORS origins are intended for local development, including the `null` origin for locally opened files; this configuration is not a production security policy.

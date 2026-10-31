@@ -68,6 +68,7 @@
           <a href="#overview" data-workspace-route="overview">Overview</a>
           <a href="#pipeline" data-workspace-route="pipeline">Pipeline Trace</a>
           <a href="#audit" data-workspace-route="audit">Leakage &amp; Evaluation Audit</a>
+          <a href="#repairs" data-workspace-route="repairs">Repair Center</a>
           <a href="#cells" data-workspace-route="cells">Cell Explorer</a>
           <a href="#evidence" data-workspace-route="evidence">Evidence Report</a>
         </nav>
@@ -83,6 +84,7 @@
             <a class="feature-link" href="#overview">Overview</a>
             <a class="feature-link" href="#pipeline">Pipeline Trace</a>
             <a class="feature-link" href="#audit">Leakage &amp; Evaluation Audit</a>
+            <a class="feature-link" href="#repairs">Repair Center</a>
             <a class="feature-link" href="#cells">Cell Explorer</a>
             <a class="feature-link" href="#evidence">Evidence Report</a>
           </nav>
@@ -289,6 +291,24 @@
             </form>
             <ul id="overlap-results" class="finding-list"></ul>
           </section>
+        </section>
+
+        <section class="workspace-section workspace-page hidden" id="repairs-section" data-workspace-page="repairs" aria-labelledby="repairs-heading">
+          <h2 id="repairs-heading">Repair Center</h2>
+          <p class="section-description">Review evidence-linked, deterministic proposals. Nothing changes until you approve it; generated notebooks are separate from the uploaded original.</p>
+          <div class="repair-summary" aria-live="polite">
+            <div><span>Total findings</span><strong id="repair-total-findings">0</strong></div>
+            <div><span>Automatically repairable</span><strong id="repairable-findings">0</strong></div>
+            <div><span>Manual review</span><strong id="manual-findings">0</strong></div>
+          </div>
+          <p id="repairs-status" class="graph-status" role="status" aria-live="polite"></p>
+          <div id="repairs-list" class="repair-list"></div>
+          <p id="repairs-empty" class="empty-state hidden">No audit findings need a repair proposal. This does not establish that the notebook is free of issues.</p>
+          <div class="repair-download-actions">
+            <button class="btn" id="download-repaired-notebook" type="button" disabled>Generate corrected notebook</button>
+            <p class="upload-message hidden" id="repair-download-message" role="status" aria-live="polite"></p>
+          </div>
+          <p class="caveat-note">Python syntax and structural validation do not prove semantic correctness. CodeTrace does not execute the notebook or claim experiment verification.</p>
         </section>
 
         <section class="workspace-section workspace-page hidden" id="cells-section" data-workspace-page="cells">

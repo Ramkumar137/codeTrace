@@ -7,6 +7,7 @@ import nbformat
 
 from backend.app.services.notebook_analyzer import analyze_notebook
 from backend.app.services.pipeline_trace import build_pipeline_trace
+from backend.app.services.repair_engine import build_repair_catalog
 
 class NotebookParseError(Exception):
     """A user-correctable error in an uploaded notebook."""
@@ -107,5 +108,8 @@ def parse_notebook(filename: str, content: bytes) -> dict[str, Any]:
     result["analysis"] = analyze_notebook(cells)
     result["analysis"]["pipeline_trace"] = build_pipeline_trace(
         result["analysis"], cells
+    )
+    result["analysis"]["repairs"] = build_repair_catalog(
+        cells, result["analysis"].get("findings", [])
     )
     return result

@@ -646,3 +646,67 @@ No dependencies were added, removed, or changed.
 - Dataset overlap is separate from notebook analysis because notebook-referenced files are not accessed and uploads are not persisted. Identifier/group semantics are supplied by the user.
 - Exact duplicate feature rows alone do not prove entity leakage. The endpoint reports counts only and processes files in memory.
 - Findings remain potential risks or review prompts; no rule in this phase confirms a runtime defect.
+
+---
+
+## Automated Repair Engine
+
+**Date completed:** 2026-11-02
+
+### Completed work
+
+1. Added `notebook.analysis.repairs`, classifying each notebook finding as automatically repairable, requiring manual intervention, or not repairable with the available evidence.
+2. Implemented two deterministic, evidence-bound repair templates: move a recognized imported sklearn `fit_transform` operation after a simple train/test split, and remove an exact target column from a literal feature selection when a preceding assignment selects that same dataframe column for the target.
+3. Added Python syntax, identifier, rule-pattern, conflict, and nbformat validation. Experiment verification remains explicitly unperformed.
+4. Added the Repair Center to the existing workspace. It shows original/proposed code, a diff, affected cells, explanations, limitations, and validation; users must individually approve or reject repairable proposals.
+5. Added `POST /api/notebooks/repairs/generate`, which accepts the original notebook and approved repair IDs and returns a separate corrected `.ipynb`. Modified code-cell outputs and execution counts are cleared; notebook order and metadata are preserved, and the original upload is not modified.
+6. Kept dataset overlap findings manual because the separately uploaded datasets are not linked to specific notebook split statements. Other unsupported or ambiguous findings do not receive speculative code edits.
+7. Updated README.md with the implemented repair scope, API, validation, workflow, and limitations.
+
+### Existing functionality reused
+
+- Reused Phase 3 findings and the existing AST notebook analysis; repair proposals are generated from the same parsed source and actual rule IDs.
+- Reused the existing notebook upload, nbformat validation, configured upload size limit, multipart API pattern, and current workspace/navigation and light theme.
+- Repair selections remain in browser memory and are submitted with the original file because notebooks are not persisted by the application.
+
+### Files created
+
+| Path | Purpose |
+|---|---|
+| `backend/app/services/repair_engine.py` | Classifies findings, constructs deterministic proposals, validates edits/conflicts, and generates corrected notebook JSON. |
+| `tests/test_repair_engine.py` | Covers repairability, manual/unsupported cases, syntax checks, conflicts, metadata/output preservation, original preservation, and API generation. |
+
+### Files modified
+
+| Path | Change |
+|---|---|
+| `backend/app/main.py` | Adds the approved-repair notebook generation endpoint. |
+| `backend/app/services/notebook_parser.py` | Adds the repair classification/proposals to the existing analysis response. |
+| `frontend/index.html` | Adds Repair Center links and the existing-template repair workspace. |
+| `frontend/js/app.js` | Adds proposal rendering, per-repair approval/rejection, and separate notebook download flow. |
+| `frontend/css/style.css` | Styles Repair Center summaries, code, diffs, and responsive layout within the existing theme. |
+| `README.md` | Documents repair templates, endpoint, validation, workflow, and limitations. |
+| `completion.md` | Records this completed phase and actual verification. |
+
+### Dependencies
+
+No dependencies were added, removed, or changed.
+
+### Verification results
+
+| Check | Actual result |
+|---|---|
+| `.\venv\Scripts\python.exe -m pytest -q` | **99 passed, 0 failed**; one existing Starlette/AnyIO deprecation warning. |
+| `.\venv\Scripts\python.exe -m compileall -q backend\app tests` | Passed. |
+| `node --check frontend\js\app.js` | Passed. |
+| `git diff --check` | Passed; Git reported line-ending conversion warnings only. |
+| Browser: preprocessing leakage repair | The existing notebook fixture uploaded; the finding, original/proposed source, diff, and validation appeared in Repair Center. Rejecting disabled generation; approving enabled it and the UI reported the corrected notebook download. The browser harness did not expose a download event; the endpoint's file generation and nbformat validation were verified by automated tests. |
+| API: corrected notebook generation | Passed; approved repair produced a separate nbformat-valid notebook with metadata preserved and modified-cell outputs/counts cleared. |
+
+### Known limitations
+
+- Automatic preprocessing repair requires a single top-level imported sklearn transformer `fit_transform` assignment, one simple `train_test_split`, recognizable `X_train`/`X_test` outputs, and no unrelated transformed-variable uses. More complex pipelines, aliases, split arrangements, or multiple edits remain manual.
+- Target-column repair supports only a simple single-line literal string column list and a preceding target assignment from the same dataframe; commented/multiline lists and derived or indirect target leakage remain manual.
+- Test-set contamination, group-aware splits, and train/test CSV overlap are manual-review cases. The engine does not guess identifiers, move tuning code, remove duplicate records, or add imports.
+- Static checks, syntax validation, and nbformat validation do not prove semantic correctness. Notebook code is never executed; no experiment verification is claimed.
+- The API is stateless and keeps no approval record or uploaded notebook. Browser approval/rejection state lasts only for the current page session.
