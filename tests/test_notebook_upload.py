@@ -76,6 +76,50 @@ def test_upload_parses_markdown_and_code_cells():
     assert data["notebook"]["analysis"]["pipeline_graph"]["trace_type"] == (
         "static_inference_not_runtime_trace"
     )
+    trace = data["notebook"]["analysis"]["pipeline_trace"]
+    assert trace["metadata"]["trace_type"] == "static_source_dependency_graph"
+    assert trace["metadata"]["node_count"] == 0
+    assert trace["nodes"] == []
+    assert trace["edges"] == []
+
+
+def test_upload_includes_pipeline_trace_built_from_notebook_source():
+    content = notebook_bytes(
+        [
+            nbformat.v4.new_code_cell('data = pd.read_csv("train.csv")'),
+            nbformat.v4.new_code_cell('X = data[["feature"]]\ny = data["label"]'),
+            nbformat.v4.new_code_cell(
+                "X_train, X_test, y_train, y_test = train_test_split(X, y)"
+            ),
+            nbformat.v4.new_code_cell(
+                "model = LogisticRegression()\nmodel.fit(X_train, y_train)"
+            ),
+        ]
+    )
+
+    response = upload(content)
+
+    assert response.status_code == 200
+    trace = response.json()["notebook"]["analysis"]["pipeline_trace"]
+    node_types = {node["operation_type"] for node in trace["nodes"]}
+    assert {
+        "dataset_loading",
+        "feature_engineering",
+        "train_test_split",
+        "model_training",
+    } <= node_types
+    split = next(
+        node for node in trace["nodes"] if node["operation_type"] == "train_test_split"
+    )
+    training = next(
+        node for node in trace["nodes"] if node["operation_type"] == "model_training"
+    )
+    assert any(
+        edge["source"] == split["id"]
+        and edge["target"] == training["id"]
+        and {"X_train", "y_train"} <= set(edge["variables"])
+        for edge in trace["edges"]
+    )
 
 
 def test_upload_counts_all_supported_cell_types():

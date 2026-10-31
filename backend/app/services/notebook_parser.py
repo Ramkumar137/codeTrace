@@ -6,6 +6,7 @@ from typing import Any
 import nbformat
 
 from backend.app.services.notebook_analyzer import analyze_notebook
+from backend.app.services.pipeline_trace import build_pipeline_trace
 
 class NotebookParseError(Exception):
     """A user-correctable error in an uploaded notebook."""
@@ -104,4 +105,7 @@ def parse_notebook(filename: str, content: bytes) -> dict[str, Any]:
         "cells": cells,
     }
     result["analysis"] = analyze_notebook(cells)
+    result["analysis"]["pipeline_trace"] = build_pipeline_trace(
+        result["analysis"], cells
+    )
     return result

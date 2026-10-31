@@ -31,11 +31,13 @@ The current implementation validates and parses notebooks, identifies a defined 
 | Automatic API health indicator in brand symbol | Implemented |
 | Notebook upload and nbformat v4 validation | Implemented |
 | Cell metadata, source, and AST-based operation extraction | Implemented |
-| Source-linked operation graph with inferred variable links | Implemented; partial patterns only |
+| Explicit CSV dataset profiling (shape, inferred types, missingness, numeric summaries) | Implemented; bounded and aggregate-only |
+| Source-linked operation graph with inferred variable links | Implemented; partial static-analysis coverage |
+| Interactive pipeline dependency map with node/edge inspection and filters | Implemented; static evidence only |
 | Potential-risk audit for supported rules | Implemented; limited coverage |
 | Cell Explorer and downloadable JSON evidence report | Implemented |
 | Comprehensive leakage/data-flow detection | Not implemented |
-| Runtime tracing, dataset inspection, and benchmark evaluation | Not implemented |
+| Dataset-aware notebook linkage, runtime tracing, and benchmark evaluation | Not implemented |
 
 ---
 
@@ -55,8 +57,10 @@ The application has a static frontend and a FastAPI backend:
 
 - **Frontend:** vanilla HTML, CSS, and JavaScript provide Inspect/About navigation, an automatic health indicator, notebook upload, Overview, Pipeline Trace, Leakage & Evaluation Audit, Cell Explorer, and evidence-report download.
 - **API and validation:** `backend/app/main.py` exposes root and health endpoints plus `POST /api/notebooks/upload`. Uploads are bounded to 10 MiB by default, validated, processed in memory, and not saved.
+- **Dataset analysis:** `POST /api/datasets/analyze` accepts a separately selected UTF-8 CSV (using the same upload-size limit) and returns aggregate row/column counts, inferred column types, missing-value counts, and numeric summaries. It does not read paths found in notebook source or retain uploaded rows.
 - **Notebook parser:** `backend/app/services/notebook_parser.py` checks JSON and nbformat v4 structure and extracts ordered cell source, type, saved execution count, and output presence.
 - **Static analyzer:** `backend/app/services/notebook_analyzer.py` uses Python AST without executing source. It extracts recognizable imports, data-read paths, feature transformations, splits, model construction, fitting, prediction, and evaluation operations.
+- **Pipeline trace:** `backend/app/services/pipeline_trace.py` converts those extracted operations and audit findings into a stable, source-referenced graph in `notebook.analysis.pipeline_trace`; it does not re-parse or execute notebook code.
 - **Audit rules:** `backend/app/services/audit_analyzer.py` applies independent, limited checks to the extracted source operations and attaches stable identifiers, evidence, source references, recommendations, severity/confidence, and caveats.
 - **Response models:** `backend/app/models/notebook.py` documents the parsed notebook and nested analysis response.
 - **Tests:** pytest tests exercise upload validation, AST extraction, graph links, findings, fallback behavior, and non-execution of untrusted source.
@@ -65,7 +69,7 @@ There is no database, permanent file storage, or notebook execution.
 
 ## End-to-End Workflow
 
-**Available workflow:** start the API and serve the static frontend. The About page is the default landing page when opened without a route; choose Inspect Notebook when ready to upload. The top navigation stays visible while the rest of the page scrolls. The header symbol checks `/api/health` on load and every 15 seconds. Choose and upload a notebook; after successful validation, the upload form is replaced by a notebook summary and separate navigation buttons for Overview, Pipeline Trace, Leakage & Evaluation Audit, Cell Explorer, and Evidence Report. Each button opens its own focused view rather than appending every section to one long page. Overview shows imported library names, individual imports, dataset references, recognized operations, and every notebook cell's source in notebook order. Pipeline Trace presents recognized operations in workflow stages and shows variable-reference links where supported. The stage order reflects notebook source order, not runtime execution. Use Notebook summary to return to the summary, or Choose another notebook to start a fresh upload. The feature pages also show potential audit findings and their evidence, notebook source cells, or a downloadable JSON report.
+**Available workflow:** start the API and serve the static frontend. The About page is the default landing page when opened without a route; choose Inspect Notebook when ready to upload. The top navigation stays visible while the rest of the page scrolls. The header symbol checks `/api/health` on load and every 15 seconds. Choose and upload a notebook; after successful validation, the upload form is replaced by a notebook summary and separate navigation buttons for Overview, Pipeline Trace, Leakage & Evaluation Audit, Cell Explorer, and Evidence Report. Each button opens its own focused view rather than appending every section to one long page. Overview shows imported library names, individual imports, notebook dataset path references, recognized operations, and every notebook cell's source in notebook order. It also lets you separately upload a CSV for aggregate dataset profiling; notebook-referenced paths are never opened. Pipeline Trace displays an interactive dependency graph generated from the notebook analysis response. Zoom, pan, fit/reset, operation-type and finding-status filters, node/edge selection, upstream/downstream highlighting, and finding-path highlighting are available. Use Notebook summary to return to the summary, or Choose another notebook to start a fresh upload. The feature pages also show potential audit findings and their evidence, notebook source cells, or a downloadable JSON report.
 
 ### Static analysis coverage
 
@@ -78,6 +82,12 @@ The current audit rules report:
 | `test_data_used_for_fit` | A recognizable `.fit(...)` call includes an identifier named like `X_test` or `y_test` | High / high | Identifiers do not prove variable contents. |
 | `evaluation_on_training_data` | A recognizable metric/score call includes an identifier named like `X_train` or `y_train` | Medium / medium | Training-set scoring can be intentional; names and purpose are not verified. |
 | `preprocessing_fit_before_split` | A recognized preprocessing fit on a common full-data identifier appears before a recognized split | Medium / medium | This is only a potential risk; later split execution and data relationships are not established. |
+
+### Explicit CSV dataset analysis
+
+The Overview page can separately submit a `.csv` file to `POST /api/datasets/analyze`. The API decodes UTF-8 (including a BOM), parses comma-delimited records for the request, ignores blank records, and returns row/column counts plus one profile per column: inferred `boolean`, `integer`, `number`, `text`, or `empty` type; non-empty and missing-value counts; missing-value percentage; and, for numeric columns, count/minimum/maximum/mean. Numeric summary values are strings to preserve decimal representation. The response does not include dataset rows or sample values, and uploaded data is not retained in application storage. Non-empty rows must match the header width and header names must be non-empty and unique. CSV uploads use the same configurable 10 MiB limit as notebooks. The implementation uses Python's standard-library CSV parser and adds no dependency.
+
+This is bounded, descriptive profiling rather than a full data-quality or ML-target analysis. Inferred types are heuristic; no categorical distributions, relationships, labels, or leakage conclusions are derived from dataset values. Dataset paths in notebook code remain informational and are never opened.
 
 High severity means prioritize human review of a direct source pattern; medium means a recognizable but context-dependent concern; low is reserved for weak signals. Severity is not a probability or confirmation. High confidence means the source call and name pattern are explicit; medium means relevant semantics remain uncertain; low is reserved for fallback-only signals.
 
@@ -92,7 +102,19 @@ High severity means prioritize human review of a direct source pattern; medium m
 
 Edges indicate only that recognized source operations reference a variable produced by an earlier recognized operation. They are inferences, not observed runtime transfers. Nodes without links remain disconnected. Notebook order, saved execution counts, and output presence are not runtime tracing.
 
-The Pipeline Trace section renders these nodes as an interactive, horizontally scrollable SVG map with distinct shapes for sources, transformations, splits, models, and model steps. Dashed arrows indicate inferred variable references. A red × marks a node whose source location is cited by a supported potential finding; it does not represent a runtime failure. Selecting a node opens its notebook cell. This is a lightweight visual presentation of the static graph, not an AWS X-Ray trace or a runtime service map.
+The analyzer also retains the earlier `pipeline_graph` field for compatibility. The current Pipeline Trace interface is generated from `notebook.analysis.pipeline_trace` as described below; neither graph is a runtime trace.
+
+### Interactive pipeline dependency map
+
+The upload response also includes `notebook.analysis.pipeline_trace`, generated from the existing `all_operations` and `findings` by `backend/app/services/pipeline_trace.py`. The graph is built independently of rendering and is consumed by the Pipeline Trace workspace; no notebook-ID endpoint is needed because uploaded notebooks are not persisted.
+
+Each node has a stable operation ID, operation type and label, operation name, cell/line source reference and source snippet, input/output variables, saved execution count when available, finding IDs, and evidence/status fields. Recognized types include dataset loading, data cleaning, missing-value handling, encoding, scaling, feature engineering/selection, train-test split, model initialization/training, prediction, and evaluation. Generic preprocessing and unclassified operations are retained when the analyzer recognized them, rather than inventing a more specific type.
+
+Directed edges are created only where an input variable matches an earlier recognized output, or where the AST explicitly nests an estimator in a recognized `Pipeline`, `make_pipeline`, `make_union`, or `ColumnTransformer`. Each edge carries stable identity, connecting variables (when applicable), an explanation, evidence reference, relationship kind, and dependency confidence. Source order is only used to identify an earlier assignment; it is not proof of runtime execution or data transfer. Unknown inputs are listed as unresolved instead of being connected by guesswork. This supports branches, multiple models, shared preprocessing, and multiple datasets when the extracted variable references establish those relationships.
+
+The SVG UI supports zoom, pan, fit/reset, node-type and finding-presence filters, node/edge selection, connected upstream/downstream highlighting, and finding-path highlighting. Node details show source code, variables, neighboring operations, execution metadata, evidence status, and associated findings. Edge details show endpoints, connecting variables, relationship support, and the dependency explanation. Status colors are scoped to evidence at the referenced operation: green means no supported issue was detected there, amber means a potential finding is associated, red is reserved for explicit confirmation, and grey indicates fallback or insufficient evidence. Existing audit rules produce potential findings, so they do not currently produce red nodes. Findings attach only to cited source locations, not automatically to downstream nodes. A green node is not a safety guarantee.
+
+Graph generation remains bounded by the static analyzer: dynamic aliases, control flow, runtime ordering, repeated assignments/execution, generated code, and library-specific semantics may be missed. Nodes and edges are limited to operations and dependencies that the analyzer actually extracts. An empty graph means no supported operation was detected, not that the notebook has no ML workflow.
 
 ### Response and safety boundaries
 
@@ -123,12 +145,24 @@ Example analysis fragment:
       ],
       "trace_type": "static_inference_not_runtime_trace"
     },
+    "pipeline_trace": {
+      "metadata": {
+        "trace_type": "static_source_dependency_graph",
+        "node_count": 0,
+        "edge_count": 0,
+        "runtime_verified": false
+      },
+      "nodes": [],
+      "edges": [],
+      "findings": [],
+      "unresolved_references": []
+    },
     "findings": []
   }
 }
 ```
 
-The actual response returns the complete parsed notebook and the analysis metadata, nodes, edges, findings, confidence/severity definitions, and limitations.
+The actual response returns the complete parsed notebook and the analysis metadata, both graph representations, findings, confidence/severity definitions, and limitations.
 
 Notebook code is never executed, imported, or evaluated. Binary outputs are omitted. The frontend inserts notebook-controlled strings as text, not HTML, and does not persist notebook contents in browser storage. Findings are potential risks for human review. Static analysis cannot establish runtime execution, actual data values, target-derived feature leakage generally, dynamic aliases/control flow, indirect test-set reuse, generated code, or all library-specific behavior. False negatives are possible; no detection benchmark is provided.
 
@@ -146,22 +180,32 @@ CodeTrace/
 │       └── app.js          # Health, upload, workspace, and report UI
 ├── backend/
 │   └── app/
-│       ├── main.py         # FastAPI app and notebook upload endpoint
+│       ├── main.py         # FastAPI health, notebook, and dataset endpoints
 │       ├── services/
 │       │   ├── notebook_parser.py # nbformat validation and extraction
-│       │   ├── notebook_analyzer.py # AST metadata and pipeline graph
-│       │   └── audit_analyzer.py # Supported source-pattern audit rules
+│   │   ├── notebook_analyzer.py # AST metadata and pipeline operations
+│   │   ├── pipeline_trace.py # Source-evidence dependency graph builder
+│       │   ├── audit_analyzer.py # Supported source-pattern audit rules
+│       │   └── dataset_analyzer.py # Explicit CSV profiling
 │       ├── api/            # Package scaffold
 │       ├── analyzers/      # Package scaffold
 │       └── models/
-│           └── notebook.py # Notebook upload response models
+│           ├── notebook.py # Notebook upload response models
+│           └── dataset.py  # CSV analysis response models
 ├── tests/
 │   ├── test_main.py        # Health endpoint tests
 │   ├── test_notebook_upload.py # Upload validation tests
-│   └── test_notebook_analyzer.py # Static analysis tests
+│   ├── test_notebook_analyzer.py # Static analysis tests
+│   ├── test_pipeline_trace.py # Pipeline graph shape/dependency tests
+│   └── test_dataset_analysis.py # CSV analysis tests
 ├── testing/
-│   └── sample_notebook.ipynb # Local upload example
-├── docs/                   # Currently empty
+│   ├── clean_ml_workflow.ipynb
+│   ├── mixed_cells_syntax_fallback.ipynb
+│   ├── preprocessing_before_split.ipynb
+│   ├── sample_dataset.csv
+│   ├── sample_notebook.ipynb
+│   ├── test_data_fit_risk.ipynb
+│   └── training_data_evaluation_risk.ipynb
 ├── .gitignore
 ├── requirements.txt
 ├── README.md
@@ -234,6 +278,7 @@ The API will be available at `http://127.0.0.1:8000`. From the project root, `.\
 | `GET /` | Confirms the API is running | `{"status":"ok","message":"CodeTrace API is running."}` |
 | `GET /api/health` | Health check consumed by the frontend | `{"status":"healthy","service":"CodeTrace API"}` |
 | `POST /api/notebooks/upload` | Validates and statically inspects one notebook | Notebook summary, source-only cell metadata, analysis, graph, and potential findings |
+| `POST /api/datasets/analyze` | Profiles one explicitly uploaded CSV for the request | Dataset dimensions and aggregate per-column profile; no row values |
 
 The upload endpoint does not authenticate callers and does not retain uploaded files. FastAPI's interactive documentation is available at `http://127.0.0.1:8000/docs` while the local server is running.
 
@@ -349,6 +394,8 @@ Example success response:
 
 The parser uses `nbformat.reads(..., as_version=nbformat.NO_CONVERT)` and `nbformat.validate`. It supports Jupyter Notebook format v4 and does not execute, evaluate, import, or otherwise run cell source. On successful responses, the backward-compatible notebook fields are extended with `analysis`: extracted imports/libraries and data references; grouped and ordered operations with cell/line/source references; a static-inference graph; supported potential-risk findings; and confidence, severity, and limitation definitions.
 
+CSV analysis is a separate explicit upload. It does not follow or open paths extracted from a notebook, and it does not persist the CSV or return individual values.
+
 ### Serve the frontend (Terminal 2)
 
 **Option A – VS Code Live Server (recommended):**
@@ -376,7 +423,7 @@ Then open `http://127.0.0.1:5500` in your browser.
 .\venv\Scripts\python.exe -m pytest tests\ -v
 ```
 
-The tests cover the root and health endpoints, notebook upload validation, AST extraction, graph links, supported audit findings, clean and flawed examples, parse fallback, and non-execution of suspicious source. Run the suite to see current results.
+The tests cover the root and health endpoints, notebook and CSV upload validation, CSV schema/type/missingness/numeric summaries, AST extraction, graph links, supported audit findings, clean and flawed examples, parse fallback, and non-execution of suspicious notebook source. Run the suite to see current results.
 
 ---
 
@@ -387,9 +434,10 @@ The tests cover the root and health endpoints, notebook upload validation, AST e
 3. Open the frontend page in a browser.
 4. Wait for the `</>` symbol in the header to turn green after the health check succeeds.
 5. Upload `testing/sample_notebook.ipynb` or another valid notebook.
-6. Review Overview, Pipeline Trace, Leakage & Evaluation Audit, and Cell Explorer. Confirm graph links are labeled as inferred and source is shown as text.
-7. Download the evidence report and inspect its notebook details, findings, definitions, and limitations.
-8. Stop the backend — within the next health check, the symbol should turn red. An upload attempt should show a connection error.
+6. In Overview, optionally upload `testing/sample_dataset.csv` to review its measured row count, column types, missing values, and numeric summaries.
+7. Review Pipeline Trace, Leakage & Evaluation Audit, and Cell Explorer. Confirm graph links are labeled as inferred and source is shown as text.
+8. Download the evidence report and inspect its notebook details, findings, definitions, and limitations.
+9. Stop the backend — within the next health check, the symbol should turn red. An upload attempt should show a connection error.
 
 ---
 
@@ -399,7 +447,7 @@ The tests cover the root and health endpoints, notebook upload validation, AST e
 - AST analysis covers common Python syntax and selected patterns. Syntax-error cells receive a limited source-text fallback or remain unresolved.
 - Variable-name matches do not prove value relationships. Control flow, branches, dynamic aliases, reassignment semantics, and target-derived feature leakage are not comprehensively analyzed.
 - Audit results are potential risks, not proof. No labeled benchmark or measured precision/recall is available.
-- Referenced datasets are not loaded. Saved output payloads are omitted and notebook code is never executed.
+- Notebook-referenced datasets are not loaded. CSV profiling is available only for a separately selected upload and is limited to aggregate summaries. Saved notebook output payloads are omitted and notebook code is never executed.
 - The frontend API base URL is configured in `frontend/js/app.js`.
 - CORS origins are intended for local development, including the `null` origin for locally opened files; this configuration is not a production security policy.
 - No database, authentication, deployment configuration, or production hardening is provided.

@@ -32,8 +32,12 @@ DATASET_READERS = {
 }
 PREPROCESSOR_TYPES = {
     "StandardScaler", "MinMaxScaler", "RobustScaler", "OneHotEncoder",
-    "LabelEncoder", "SimpleImputer", "ColumnTransformer", "Pipeline",
+    "LabelEncoder", "OrdinalEncoder", "SimpleImputer", "ColumnTransformer",
+    "Pipeline", "SelectKBest", "SelectFromModel", "RFE", "VarianceThreshold",
+    "make_pipeline", "make_union",
 }
+DATA_CLEANERS = {"drop_duplicates", "drop", "replace", "rename"}
+MISSING_VALUE_HANDLERS = {"dropna", "fillna", "interpolate"}
 SPLITTERS = {"train_test_split", "StratifiedShuffleSplit", "KFold", "StratifiedKFold"}
 PREDICTORS = {"predict", "predict_proba", "decision_function"}
 EVALUATORS = {
@@ -83,6 +87,10 @@ def _operation_kind(call: ast.Call) -> str | None:
         return "data_source"
     if method in SPLITTERS:
         return "split"
+    if method in DATA_CLEANERS:
+        return "cleaning"
+    if method in MISSING_VALUE_HANDLERS:
+        return "missing_value_handling"
     if lower in {
         "fit_transform", "transform", "impute", "normalize",
         "standardize", "scale", "encode", "get_dummies",
@@ -127,7 +135,9 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
     seen_edges: set[tuple[str, str, str]] = set()
     unresolved_references: list[dict[str, Any]] = []
 
-    def add_operation(kind: str, node: ast.Call, tree: ast.AST, cell: dict[str, Any], source: str) -> None:
+    def add_operation(
+        kind: str, node: ast.Call, tree: ast.AST, cell: dict[str, Any], source: str
+    ) -> dict[str, Any]:
         nonlocal node_counter
         call_name = _call_name(node)
         line = getattr(node, "lineno", 1)
@@ -136,18 +146,16 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
         node_counter += 1
         assigned_vars: set[str] = set()
         for parent in ast.walk(tree):
-            if isinstance(parent, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-                value = parent.value
-                if any(candidate is node for candidate in ast.walk(value)):
-                    target_nodes = parent.targets if isinstance(parent, ast.Assign) else [parent.target]
-                    for target in target_nodes:
-                        assigned_vars.update(_targets(target))
+            if isinstance(parent, ast.Assign) and parent.value is node:
+                for target in parent.targets:
+                    assigned_vars.update(_targets(target))
+            elif isinstance(parent, (ast.AnnAssign, ast.NamedExpr)) and parent.value is node:
+                assigned_vars.update(_targets(parent.target))
             elif isinstance(parent, ast.Call) and parent is node and kind == "split":
                 for ancestor in ast.walk(tree):
-                    if isinstance(ancestor, ast.Assign) and any(
-                        candidate is node for candidate in ast.walk(ancestor.value)
-                    ):
-                        assigned_vars.update(_targets(ancestor))
+                    if isinstance(ancestor, ast.Assign) and ancestor.value is node:
+                        for target in ancestor.targets:
+                            assigned_vars.update(_targets(target))
 
         used_vars = set()
         for argument in [*node.args, *(keyword.value for keyword in node.keywords)]:
@@ -162,7 +170,14 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
             "cell_index": cell["index"],
             "line": line,
             "source": segment,
-            "inputs": sorted(used_vars - assigned_vars),
+            "inputs": sorted(
+                (used_vars - assigned_vars)
+                | (
+                    _variables(node.func.value)
+                    if isinstance(node.func, ast.Attribute)
+                    else set()
+                )
+            ),
             "outputs": sorted(assigned_vars),
             "source_ref": {"cell_index": cell["index"], "line": line},
         }
@@ -206,6 +221,7 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
                     )
         for variable in operation["outputs"]:
             previous_nodes_by_variable[variable] = [node_id]
+        return operation
 
     for cell in cells:
         source = cell["source"]
@@ -263,6 +279,12 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
                 0 if isinstance(item, ast.Assign) else 1,
             ),
         )
+        parent_by_node = {
+            id(child): parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+        operation_by_call: dict[int, dict[str, Any]] = {}
         for item in ordered_nodes:
             if isinstance(item, ast.Import):
                 for alias in item.names:
@@ -293,7 +315,9 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
                 kind = _operation_kind(item)
                 if not kind:
                     continue
-                add_operation(kind, item, tree, cell, source)
+                operation_by_call[id(item)] = add_operation(
+                    kind, item, tree, cell, source
+                )
                 if kind == "data_source":
                     argument = item.args[0] if item.args else next(
                         (keyword.value for keyword in item.keywords if keyword.arg in {"filepath_or_buffer", "path"}),
@@ -378,6 +402,20 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
                         for variable in operation["outputs"]:
                             previous_nodes_by_variable[variable] = [node_id]
 
+        for item in ordered_nodes:
+            operation = operation_by_call.get(id(item))
+            if operation is None:
+                continue
+            parent = parent_by_node.get(id(item))
+            while parent is not None and id(parent) not in operation_by_call:
+                parent = parent_by_node.get(id(parent))
+            if parent is not None:
+                parent_operation = operation_by_call[id(parent)]
+                if parent_operation["name"] in {
+                    "Pipeline", "make_pipeline", "make_union", "ColumnTransformer"
+                }:
+                    operation["composition_parent_id"] = parent_operation["id"]
+
     findings.extend(analyze_findings(operations))
     if parse_fallback_cells:
         limitations.append(
@@ -394,7 +432,8 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
         key: [operation for operation in operations if operation["kind"] == key]
         for key in (
             "data_source", "feature_engineering", "preprocessing", "split", "model",
-            "training", "prediction", "evaluation",
+            "training", "prediction", "evaluation", "cleaning",
+            "missing_value_handling",
         )
     }
     return {

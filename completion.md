@@ -449,3 +449,131 @@ This remains a static-source graph. Its links are inferred variable references, 
 | Browser upload of `testing/sample_notebook.ipynb` | **Passed**; successful upload hid the upload stage and opened the summary page with all five feature buttons. |
 | Browser feature navigation | **Passed**; Overview, Pipeline Trace, Leakage & Evaluation Audit, Cell Explorer, and Evidence Report each displayed their own route with the other pages hidden; returning to the summary worked. |
 | Browser upload reset | **Passed**; Choose another notebook returned to the upload form and hid the investigation workspace. |
+
+---
+
+## Explicit CSV Dataset Profiling
+
+**Date completed:** 2026-10-31
+
+### Completed work
+
+1. Added `POST /api/datasets/analyze` for CSV files explicitly selected by the user. It validates the `.csv` extension, UTF-8 encoding, upload size, header, and record widths; processing is in memory and does not save dataset rows.
+2. Added aggregate dataset profiles with observed row and column counts, inferred boolean/integer/number/text/empty types, non-empty and missing-value counts, missing percentages, and numeric count/minimum/maximum/mean.
+3. Added a CSV upload and profile table to the existing Overview page, retaining CodeTrace branding and the existing light theme.
+4. Added `testing/sample_dataset.csv` and documented the CSV endpoint, its input constraints, output semantics, and manual workflow.
+5. Added API tests for numeric/type/missingness results, BOM and quoted fields, blank rows, empty datasets, file validation, encoding errors, and malformed CSV structures.
+
+### Existing functionality reused
+
+- Reused the existing FastAPI app, multipart handling, structured validation-error pattern, and configured `MAX_UPLOAD_SIZE_BYTES`.
+- Kept notebook upload and notebook parsing unchanged; dataset paths inferred from notebook source are not opened.
+- Reused the existing Overview workspace, file-input/button/message styles, and responsive light-theme design.
+- Used Python's standard-library `csv` and `decimal` modules; no dataset or ML package was added.
+
+### Files created
+
+| Path | Purpose |
+|---|---|
+| `backend/app/services/dataset_analyzer.py` | Bounded, in-memory CSV parsing and aggregate profiling. |
+| `backend/app/models/dataset.py` | Typed CSV analysis response models. |
+| `tests/test_dataset_analysis.py` | Dataset analysis and endpoint validation tests. |
+| `testing/sample_dataset.csv` | Small manual-test CSV fixture. |
+
+### Files modified
+
+| Path | Change |
+|---|---|
+| `backend/app/main.py` | Added the CSV analysis endpoint, preserving existing endpoints. |
+| `frontend/index.html` | Added CSV selection and aggregate profile UI to Overview. |
+| `frontend/js/app.js` | Added CSV upload, response validation, and safe text rendering. |
+| `frontend/css/style.css` | Styled the profile table and upload panel within the existing theme. |
+| `README.md` | Documented dataset analysis, safety boundaries, API, and manual test steps. |
+| `completion.md` | Recorded this completed work and actual validation results. |
+
+### Dependencies
+
+No dependencies were added, removed, or changed.
+
+### Verification results
+
+| Check | Actual result |
+|---|---|
+| `.\venv\Scripts\python.exe -m pytest tests\ -q` | **43 passed, 0 failed**; one existing Starlette/AnyIO `BlockingPortal` deprecation warning. Pytest exit code 0. |
+| `.\venv\Scripts\python.exe -m pytest tests\test_dataset_analysis.py -q` | **13 passed, 0 failed**; same dependency deprecation warning. |
+| `node --check frontend\js\app.js` | **Passed**, exit code 0. |
+| `.\venv\Scripts\python.exe -m compileall -q backend\app` | **Passed**, exit code 0. |
+| `git diff --check` | **Passed**, exit code 0. |
+| Browser workflow: upload `testing/sample_notebook.ipynb`, open Overview, upload `testing/sample_dataset.csv` | **Passed**; the UI showed 3 rows, 3 columns, age/score/segment profiles, missing percentages, and calculated numeric summaries. |
+
+### Known limitations
+
+- Only comma-delimited UTF-8 CSV files are supported; uploads use the existing 10 MiB size limit.
+- Type inference and missingness are simple heuristics; only blank or whitespace-only cells count as missing. No distributions, target detection, relational checks, or leakage conclusions are produced.
+- The CSV profile is displayed in the current notebook workspace but is not yet included in the JSON evidence report.
+- Notebook-referenced paths remain informational and are never opened; notebooks continue to be parsed without execution.
+
+## Interactive Pipeline Trace Graph
+
+**Date completed:** 2026-10-31
+
+### Completed work
+
+1. Added `analysis.pipeline_trace` to the existing notebook upload response. The separate graph builder consumes the Phase 1 extracted operations and findings without executing notebook code or duplicating analysis.
+2. Generated stable source-referenced nodes for recognized ML operations and directed edges only for explicit variable references or AST-detected estimator composition. Unresolved inputs are recorded without guessed links.
+3. Associated findings only with their exact source references and represented potential, confirmed, no-supported-issue, and insufficient-evidence states without propagating findings downstream.
+4. Replaced the Pipeline Trace stage/list interface with an interactive SVG dependency graph in the existing CodeTrace workspace. Added operation/finding filters, zoom, pan, fit/reset, node and edge selection/details, connected-operation highlighting, finding-path highlighting, and a legend.
+5. Documented the graph schema, dependency semantics, supported operation categories, interactions, and static-analysis limitations in README.md. Reset the finding filter when a newly uploaded notebook is rendered.
+6. Added upload-response integration coverage proving that source operations and their dependency links are present in the returned graph.
+
+### Existing functionality reused
+
+- The existing upload endpoint and validated notebook parser.
+- Phase 1 AST-extracted operations, cell/source references, and audit findings.
+- The existing notebook workspace, navigation, evidence statuses, and source-cell viewer.
+- The existing vanilla HTML/CSS/JavaScript frontend and light CodeTrace visual design.
+
+### Files created
+
+| Path | Purpose |
+|---|---|
+| `backend/app/services/pipeline_trace.py` | Builds the structured static dependency graph from existing analysis output. |
+| `tests/test_pipeline_trace.py` | Tests operation nodes, supported dependencies, branches, composition, findings, and uncertainty. |
+
+### Files modified
+
+| Path | Change |
+|---|---|
+| `backend/app/services/notebook_analyzer.py` | Extracted supported cleaning/missing-value operations and explicit estimator composition metadata. |
+| `backend/app/services/notebook_parser.py` | Added the graph to the existing upload analysis response. |
+| `tests/test_notebook_upload.py` | Added graph response shape and upload-to-graph dependency integration assertions. |
+| `frontend/index.html` | Added the graph controls, filters, legend, accessible graph viewport, and detail inspectors. |
+| `frontend/js/app.js` | Added graph validation, layout/rendering, interactions, status highlighting, and filter reset on notebook change. |
+| `frontend/css/style.css` | Styled the graph, controls, details, and evidence statuses within the existing theme. |
+| `README.md` | Documented the interactive graph, response schema, generation, and limitations. |
+| `completion.md` | Recorded this completed phase and actual verification results. |
+
+### Dependencies
+
+No dependencies were added, removed, or changed.
+
+### Verification results
+
+| Check | Actual result |
+|---|---|
+| `venv\Scripts\python.exe -m pytest tests\ -q` | **54 passed, 0 failed**; one existing Starlette/AnyIO `BlockingPortal` deprecation warning. |
+| Focused upload and graph tests | **23 passed, 0 failed**; same dependency deprecation warning. |
+| `node --check frontend\js\app.js` | Passed. |
+| `venv\Scripts\python.exe -m compileall -q backend\app` | Passed. |
+| `git diff --check` | Passed; Git emitted only existing line-ending conversion warnings. |
+| Browser upload and graph interaction with `testing/clean_ml_workflow.ipynb` | Passed; rendered 8 recognized operations and 10 dependency edges. Node selection/details, edge selection/details, type filtering, finding filtering, fit, zoom, and reset worked. |
+| Browser upload with `testing/preprocessing_before_split.ipynb` | Passed; the two evidence-associated operations were amber, no nodes were red, and finding-path highlighting activated. |
+| Browser change from a finding-filtered notebook to a clean notebook | Passed; the finding filter reset to all operations and rendered the new notebook's 8 nodes. |
+
+### Known limitations
+
+- The graph remains static source inference, not runtime tracing. Notebook source order helps identify earlier assignments but does not establish execution order or prove runtime transfer.
+- Variable aliases, dynamic dispatch, control flow, repeated assignments/execution, generated code, and library-specific semantics may not be resolved.
+- Detection is limited to operations recognized by the existing analyzer; unknown dependencies remain unresolved rather than guessed.
+- Current audit findings are potential risks, so red confirmed-finding indicators are supported by the graph schema but are not emitted by current audit rules.
+- Graph data is included in the transient upload response; notebooks are not persisted and there is no notebook-ID retrieval endpoint.

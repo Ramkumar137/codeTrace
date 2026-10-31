@@ -11,7 +11,12 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.app.models.dataset import DatasetAnalysisResponse
 from backend.app.models.notebook import NotebookUploadResponse
+from backend.app.services.dataset_analyzer import (
+    DatasetAnalysisError,
+    analyze_csv_dataset,
+)
 from backend.app.services.notebook_parser import NotebookParseError, parse_notebook
 
 
@@ -43,7 +48,7 @@ logging.getLogger("uvicorn.access").addFilter(HealthCheckAccessLogFilter())
 
 app = FastAPI(
     title="CodeTrace API",
-    description="Validates and parses Jupyter Notebooks for CodeTrace.",
+    description="Validates notebooks and analyzes explicitly uploaded CSV datasets for CodeTrace.",
     version="0.1.0",
 )
 
@@ -150,5 +155,82 @@ async def upload_notebook(file: UploadFile | str | None = File(default=None)):
             ) from error
 
         return {"status": "success", "notebook": notebook}
+    finally:
+        await file.close()
+
+
+@app.post(
+    "/api/datasets/analyze",
+    response_model=DatasetAnalysisResponse,
+    tags=["datasets"],
+)
+async def analyze_dataset(file: UploadFile | str | None = File(default=None)):
+    """Analyze an explicitly uploaded CSV in memory without saving its contents."""
+    if file is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "missing_file",
+                "message": "Select a CSV dataset file to analyze.",
+            },
+        )
+    if isinstance(file, str):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "missing_filename",
+                "message": "The uploaded file must have a filename.",
+            },
+        )
+
+    try:
+        filename = file.filename
+        if not filename or not filename.strip():
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "missing_filename",
+                    "message": "The uploaded file must have a filename.",
+                },
+            )
+        if Path(filename).suffix.lower() != ".csv":
+            raise HTTPException(
+                status_code=415,
+                detail={
+                    "code": "unsupported_file_type",
+                    "message": "Only files with the .csv extension are accepted.",
+                },
+            )
+
+        content = await file.read(MAX_UPLOAD_SIZE_BYTES + 1)
+        if not content:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "empty_file",
+                    "message": "The uploaded CSV file is empty.",
+                },
+            )
+        if len(content) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "code": "file_too_large",
+                    "message": (
+                        "The uploaded dataset exceeds the configured size limit of "
+                        f"{MAX_UPLOAD_SIZE_BYTES} bytes."
+                    ),
+                },
+            )
+
+        try:
+            dataset = analyze_csv_dataset(filename, content)
+        except DatasetAnalysisError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": error.message},
+            ) from error
+
+        return {"status": "success", "dataset": dataset}
     finally:
         await file.close()

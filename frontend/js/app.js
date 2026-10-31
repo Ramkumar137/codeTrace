@@ -19,11 +19,94 @@ const workspace = document.getElementById("investigation-workspace");
 const cellSelector = document.getElementById("cell-selector");
 const cellMeta = document.getElementById("cell-meta");
 const cellSource = document.getElementById("cell-source");
+const datasetForm = document.getElementById("dataset-upload-form");
+const datasetFile = document.getElementById("dataset-file");
+const datasetUploadBtn = document.getElementById("dataset-upload-btn");
+const datasetUploadMessage = document.getElementById("dataset-upload-message");
+const datasetResults = document.getElementById("dataset-results");
+const datasetColumns = document.getElementById("dataset-columns");
 let currentNotebook = null;
+let currentPipelineTrace = null;
+let pipelineGraphLayout = null;
+let graphViewBox = null;
+let graphInitialViewBox = null;
+let graphSelectedItem = null;
+let graphHighlightFindingPaths = false;
+let graphSelectedFindingId = null;
 let healthCheckInProgress = false;
 let uploadInProgress = false;
+let datasetUploadInProgress = false;
 
 cellSelector.addEventListener("change", () => selectCell(Number(cellSelector.value)));
+
+document.getElementById("graph-type-filters").addEventListener("change", renderPipelineSvg);
+document.getElementById("graph-finding-filter").addEventListener("change", renderPipelineSvg);
+document.getElementById("graph-zoom-in").addEventListener("click", () => zoomPipelineGraph(0.8));
+document.getElementById("graph-zoom-out").addEventListener("click", () => zoomPipelineGraph(1.25));
+document.getElementById("graph-fit").addEventListener("click", fitPipelineGraph);
+document.getElementById("graph-reset").addEventListener("click", resetPipelineGraph);
+document.getElementById("graph-highlight-findings").addEventListener("click", (event) => {
+  graphHighlightFindingPaths = !graphHighlightFindingPaths;
+  graphSelectedFindingId = null;
+  event.currentTarget.setAttribute("aria-pressed", String(graphHighlightFindingPaths));
+  renderPipelineSvg();
+});
+document.getElementById("graph-edges").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-edge-id]");
+  if (button) {
+    selectPipelineEdge(button.dataset.edgeId);
+  }
+});
+document.getElementById("graph-inspect-source").addEventListener("click", () => {
+  if (graphSelectedItem && graphSelectedItem.type === "node") {
+    selectCell(graphSelectedItem.item.cell_index);
+    window.location.hash = "#cells";
+  }
+});
+
+const graphViewport = document.getElementById("graph-viewport");
+graphViewport.addEventListener("pointerdown", (event) => {
+  if (event.target.closest(".pipeline-node, .pipeline-edge")) {
+    return;
+  }
+  graphViewport.setPointerCapture(event.pointerId);
+  graphViewport.classList.add("is-panning");
+  graphViewport.dataset.panStartX = String(event.clientX);
+  graphViewport.dataset.panStartY = String(event.clientY);
+  graphViewport.dataset.panViewBox = graphViewBox ? JSON.stringify(graphViewBox) : "";
+});
+graphViewport.addEventListener("pointermove", (event) => {
+  if (!graphViewport.hasPointerCapture(event.pointerId) || !graphViewBox) {
+    return;
+  }
+  const initialView = JSON.parse(graphViewport.dataset.panViewBox || "null");
+  if (!initialView) {
+    return;
+  }
+  const rect = document.getElementById("pipeline-graph").getBoundingClientRect();
+  const deltaX = event.clientX - Number(graphViewport.dataset.panStartX);
+  const deltaY = event.clientY - Number(graphViewport.dataset.panStartY);
+  graphViewBox = {
+    ...initialView,
+    x: initialView.x - deltaX * initialView.width / rect.width,
+    y: initialView.y - deltaY * initialView.height / rect.height
+  };
+  updatePipelineViewBox();
+});
+graphViewport.addEventListener("pointerup", (event) => {
+  if (graphViewport.hasPointerCapture(event.pointerId)) {
+    graphViewport.releasePointerCapture(event.pointerId);
+  }
+  graphViewport.classList.remove("is-panning");
+});
+graphViewport.addEventListener("pointercancel", () => graphViewport.classList.remove("is-panning"));
+graphViewport.addEventListener("wheel", (event) => {
+  if (!currentPipelineTrace || !graphViewBox) {
+    return;
+  }
+  event.preventDefault();
+  zoomPipelineGraph(event.deltaY < 0 ? 0.88 : 1.14);
+}, { passive: false });
 
 function setHealth(state, label) {
   healthIndicator.dataset.health = state;
@@ -92,6 +175,9 @@ function showRoute() {
         link.removeAttribute("aria-current");
       }
     });
+    if (workspaceRoute === "pipeline" && pipelineGraphLayout) {
+      window.requestAnimationFrame(fitPipelineGraph);
+    }
   }
   document.querySelectorAll(".primary-nav a").forEach((link) => {
     if (link.dataset.route === (aboutIsVisible ? "about" : "inspect")) {
@@ -112,6 +198,12 @@ showRoute();
 notebookFile.addEventListener("change", () => {
   if (notebookFile.files.length > 0) {
     clearUploadMessage();
+  }
+});
+
+datasetFile.addEventListener("change", () => {
+  if (datasetFile.files.length > 0) {
+    clearDatasetMessage();
   }
 });
 
@@ -185,6 +277,8 @@ uploadForm.addEventListener("submit", async (event) => {
 
 document.getElementById("choose-another-notebook").addEventListener("click", () => {
   currentNotebook = null;
+  datasetForm.reset();
+  resetDatasetAnalysis();
   uploadForm.reset();
   clearUploadMessage();
   notebookSummary.classList.add("hidden");
@@ -195,9 +289,87 @@ document.getElementById("choose-another-notebook").addEventListener("click", () 
   notebookFile.focus();
 });
 
+datasetForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (datasetUploadInProgress) {
+    return;
+  }
+
+  const selectedFile = datasetFile.files[0];
+  if (!selectedFile) {
+    showDatasetMessage("Choose a .csv file to analyze.", "error");
+    datasetFile.focus();
+    return;
+  }
+
+  datasetUploadInProgress = true;
+  datasetUploadBtn.disabled = true;
+  datasetUploadBtn.textContent = "Analyzing…";
+  datasetResults.classList.add("hidden");
+  datasetColumns.replaceChildren();
+  showDatasetMessage("Analyzing the uploaded CSV…", "loading");
+
+  try {
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+    const response = await fetch(`${API_BASE_URL}/api/datasets/analyze`, {
+      method: "POST",
+      body: formData
+    });
+
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error("The server returned a non-JSON response.");
+    }
+
+    if (!response.ok) {
+      const message = response.status >= 500
+        ? GENERIC_UPLOAD_ERROR
+        : data && data.detail && typeof data.detail.message === "string"
+          ? data.detail.message
+          : "The dataset could not be analyzed. Please check the file and try again.";
+      showDatasetMessage(message, "error");
+      return;
+    }
+
+    if (!isDatasetSuccessResponse(data)) {
+      showDatasetMessage("The server response did not contain a valid dataset profile.", "error");
+      return;
+    }
+
+    renderDatasetAnalysis(data.dataset);
+    showDatasetMessage("CSV analysis complete. Only aggregate profile data is displayed.", "success");
+  } catch {
+    showDatasetMessage(GENERIC_UPLOAD_ERROR, "error");
+  } finally {
+    datasetUploadInProgress = false;
+    datasetUploadBtn.disabled = false;
+    datasetUploadBtn.textContent = "Analyze CSV";
+  }
+});
+
 function showUploadMessage(message, state) {
   uploadMessage.textContent = message;
   uploadMessage.className = `upload-message ${state}`;
+}
+
+function showDatasetMessage(message, state) {
+  datasetUploadMessage.textContent = message;
+  datasetUploadMessage.className = `upload-message ${state}`;
+}
+
+function clearDatasetMessage() {
+  datasetUploadMessage.textContent = "";
+  datasetUploadMessage.className = "upload-message hidden";
+}
+
+function resetDatasetAnalysis() {
+  clearDatasetMessage();
+  datasetResults.classList.add("hidden");
+  document.getElementById("dataset-summary").textContent = "";
+  datasetColumns.replaceChildren();
 }
 
 function clearUploadMessage() {
@@ -244,6 +416,70 @@ function isNotebookSuccessResponse(data) {
     notebook.code_cells === cellTypes.code &&
     notebook.markdown_cells === cellTypes.markdown &&
     notebook.raw_cells === cellTypes.raw;
+}
+
+function isDatasetSuccessResponse(data) {
+  const dataset = data && data.dataset;
+  if (
+    !data ||
+    data.status !== "success" ||
+    !dataset ||
+    typeof dataset.filename !== "string" ||
+    !dataset.filename ||
+    !Number.isInteger(dataset.row_count) ||
+    dataset.row_count < 0 ||
+    !Number.isInteger(dataset.column_count) ||
+    dataset.column_count < 0 ||
+    !Array.isArray(dataset.columns) ||
+    dataset.columns.length !== dataset.column_count
+  ) {
+    return false;
+  }
+
+  const inferredTypes = new Set(["boolean", "empty", "integer", "number", "text"]);
+  return dataset.columns.every((column) =>
+    column &&
+    typeof column.name === "string" &&
+    column.name.length > 0 &&
+    inferredTypes.has(column.inferred_type) &&
+    Number.isInteger(column.non_empty_values) &&
+    Number.isInteger(column.missing_values) &&
+    column.non_empty_values >= 0 &&
+    column.missing_values >= 0 &&
+    column.non_empty_values + column.missing_values === dataset.row_count &&
+    Number.isFinite(column.missing_percentage) &&
+    (column.numeric_summary === null ||
+      (column.numeric_summary &&
+        Number.isInteger(column.numeric_summary.count) &&
+        typeof column.numeric_summary.minimum === "string" &&
+        typeof column.numeric_summary.maximum === "string" &&
+        typeof column.numeric_summary.mean === "string"))
+  );
+}
+
+function renderDatasetAnalysis(dataset) {
+  document.getElementById("dataset-summary").textContent =
+    `${dataset.filename} · ${dataset.row_count} data row(s) · ${dataset.column_count} column(s)`;
+  datasetColumns.replaceChildren();
+
+  dataset.columns.forEach((column) => {
+    const row = document.createElement("tr");
+    const name = document.createElement("td");
+    const type = document.createElement("td");
+    const missing = document.createElement("td");
+    const numeric = document.createElement("td");
+    name.textContent = column.name;
+    type.textContent = column.inferred_type;
+    missing.textContent =
+      `${column.missing_values} (${column.missing_percentage}% of rows)`;
+    numeric.textContent = column.numeric_summary
+      ? `n=${column.numeric_summary.count} · min=${column.numeric_summary.minimum} · max=${column.numeric_summary.maximum} · mean=${column.numeric_summary.mean}`
+      : "Not applicable";
+    row.append(name, type, missing, numeric);
+    datasetColumns.appendChild(row);
+  });
+
+  datasetResults.classList.remove("hidden");
 }
 
 function showNotebookSummary(notebook) {
@@ -305,8 +541,7 @@ function renderInvestigation(notebook) {
   document.getElementById("overview-limitations").textContent =
     (analysis.limitations || []).join(" ");
 
-  renderGraph(analysis.pipeline_graph, analysis.findings);
-  renderWorkflowStages(analysis.pipeline_graph, analysis.findings);
+  renderPipelineTrace(analysis.pipeline_trace);
   renderFindings(analysis.findings);
   renderOverviewCells(notebook.cells);
   renderCells(notebook.cells);
@@ -719,6 +954,653 @@ function selectPipelineNode(nodeId, cellIndex) {
   window.location.hash = "#cells";
 }
 
+const PIPELINE_TYPE_LABELS = {
+  dataset_loading: "Dataset loading",
+  data_cleaning: "Data cleaning",
+  missing_value_handling: "Missing-value handling",
+  data_encoding: "Data encoding",
+  data_scaling: "Data scaling",
+  feature_engineering: "Feature engineering",
+  feature_selection: "Feature selection",
+  train_test_split: "Train-test split",
+  model_initialization: "Model initialization",
+  model_training: "Model training",
+  prediction: "Prediction",
+  model_evaluation: "Model evaluation",
+  preprocessing: "Preprocessing",
+  unknown: "Unclassified operation"
+};
+const PIPELINE_STATUS_LABELS = {
+  green: "No supported issue detected",
+  amber: "Potential finding",
+  red: "Confirmed finding",
+  grey: "Insufficient evidence"
+};
+
+function isValidPipelineTrace(graph) {
+  if (
+    !graph ||
+    !graph.metadata ||
+    graph.metadata.trace_type !== "static_source_dependency_graph" ||
+    !Array.isArray(graph.nodes) ||
+    !Array.isArray(graph.edges) ||
+    !Array.isArray(graph.findings) ||
+    !Array.isArray(graph.unresolved_references)
+  ) {
+    return false;
+  }
+  const nodeIds = new Set();
+  for (const node of graph.nodes) {
+    if (
+      !node ||
+      typeof node.id !== "string" ||
+      nodeIds.has(node.id) ||
+      typeof node.operation_type !== "string" ||
+      typeof node.display_label !== "string" ||
+      typeof node.operation_name !== "string" ||
+      !Number.isInteger(node.cell_index) ||
+      !Number.isInteger(node.line) ||
+      !Array.isArray(node.input_variables) ||
+      !Array.isArray(node.output_variables) ||
+      !Array.isArray(node.finding_ids) ||
+      !Object.hasOwn(PIPELINE_STATUS_LABELS, node.status)
+    ) {
+      return false;
+    }
+    nodeIds.add(node.id);
+  }
+  const edgeIds = new Set();
+  return graph.edges.every((edge) => {
+    if (
+      !edge ||
+      typeof edge.id !== "string" ||
+      edgeIds.has(edge.id) ||
+      !nodeIds.has(edge.source) ||
+      !nodeIds.has(edge.target) ||
+      edge.source === edge.target ||
+      !Array.isArray(edge.variables) ||
+      typeof edge.relationship !== "string" ||
+      typeof edge.explanation !== "string"
+    ) {
+      return false;
+    }
+    edgeIds.add(edge.id);
+    return true;
+  });
+}
+
+function renderPipelineTrace(graph) {
+  const status = document.getElementById("pipeline-status");
+  const error = document.getElementById("pipeline-error");
+  const empty = document.getElementById("graph-empty");
+  const viewport = document.getElementById("graph-viewport");
+  const svg = document.getElementById("pipeline-graph");
+  status.textContent = "Loading pipeline graph from notebook analysis…";
+  error.classList.add("hidden");
+  empty.classList.add("hidden");
+  svg.replaceChildren();
+  currentPipelineTrace = null;
+  graphSelectedItem = null;
+  graphSelectedFindingId = null;
+  graphHighlightFindingPaths = false;
+  pipelineGraphLayout = null;
+  graphInitialViewBox = null;
+  graphViewBox = null;
+  document.getElementById("graph-highlight-findings").setAttribute("aria-pressed", "false");
+  document.getElementById("graph-finding-filter").value = "all";
+
+  if (!isValidPipelineTrace(graph)) {
+    status.textContent = "Pipeline trace unavailable.";
+    error.textContent =
+      "The notebook analysis did not include a valid pipeline graph. The rest of the notebook analysis is still available.";
+    error.classList.remove("hidden");
+    viewport.classList.add("hidden");
+    document.getElementById("graph-type-filters").replaceChildren();
+    document.getElementById("graph-edges").replaceChildren();
+    document.getElementById("graph-unresolved").replaceChildren();
+    showGraphSelectionEmpty();
+    return;
+  }
+
+  currentPipelineTrace = graph;
+  document.getElementById("graph-type-filters").replaceChildren();
+  const types = [...new Set(graph.nodes.map((node) => node.operation_type))].sort();
+  types.forEach((type) => {
+    const label = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = type;
+    checkbox.checked = true;
+    const text = document.createElement("span");
+    text.textContent = PIPELINE_TYPE_LABELS[type] || type;
+    label.append(checkbox, text);
+    document.getElementById("graph-type-filters").appendChild(label);
+  });
+
+  renderPipelineEdgeList(graph.edges);
+  renderList(
+    "graph-unresolved",
+    graph.unresolved_references.map((reference) =>
+      `${reference.variable}: ${reference.reason} Cell ${reference.source_ref.cell_index + 1}:${reference.source_ref.line}`
+    ),
+    "No unresolved input variables."
+  );
+  status.textContent = graph.nodes.length
+    ? `${graph.nodes.length} recognized operation(s), ${graph.edges.length} source-supported dependency edge(s).`
+    : "Analysis completed; no supported operation was detected.";
+  renderPipelineSvg();
+}
+
+function renderPipelineEdgeList(edges) {
+  const list = document.getElementById("graph-edges");
+  list.replaceChildren();
+  if (!edges.length) {
+    const item = document.createElement("li");
+    item.className = "empty-state";
+    item.textContent = "No supported operation-to-operation dependencies were identified.";
+    list.appendChild(item);
+    return;
+  }
+  const nodes = new Map(currentPipelineTrace.nodes.map((node) => [node.id, node]));
+  edges.forEach((edge) => {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "graph-edge-list-button";
+    button.dataset.edgeId = edge.id;
+    const source = nodes.get(edge.source);
+    const target = nodes.get(edge.target);
+    button.textContent =
+      `${source ? source.operation_name : edge.source} → ${target ? target.operation_name : edge.target}` +
+      (edge.variables.length ? ` · ${edge.variables.join(", ")}` : " · composed estimator");
+    item.appendChild(button);
+    list.appendChild(item);
+  });
+}
+
+function visiblePipelineElements() {
+  const enabledTypes = new Set(
+    [...document.querySelectorAll("#graph-type-filters input:checked")]
+      .map((checkbox) => checkbox.value)
+  );
+  const findingFilter = document.getElementById("graph-finding-filter").value;
+  const nodes = currentPipelineTrace.nodes.filter((node) => {
+    if (!enabledTypes.has(node.operation_type)) {
+      return false;
+    }
+    if (findingFilter === "findings" && !node.finding_ids.length) {
+      return false;
+    }
+    if (findingFilter === "no-findings" && node.finding_ids.length) {
+      return false;
+    }
+    return true;
+  });
+  const visibleIds = new Set(nodes.map((node) => node.id));
+  const edges = currentPipelineTrace.edges.filter(
+    (edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)
+  );
+  return { nodes, edges };
+}
+
+function layoutPipelineGraph(nodes, edges) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const incoming = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodes.map((node) => [node.id, []]));
+  edges.forEach((edge) => {
+    incoming.set(edge.target, incoming.get(edge.target) + 1);
+    outgoing.get(edge.source).push(edge.target);
+  });
+  const sourceOrder = (leftId, rightId) => {
+    const left = byId.get(leftId);
+    const right = byId.get(rightId);
+    return left.cell_index - right.cell_index || left.line - right.line || left.id.localeCompare(right.id);
+  };
+  const queue = [...nodes.filter((node) => incoming.get(node.id) === 0).map((node) => node.id)]
+    .sort(sourceOrder);
+  const ranks = new Map(nodes.map((node) => [node.id, 0]));
+  const visited = new Set();
+  while (queue.length) {
+    const source = queue.shift();
+    visited.add(source);
+    outgoing.get(source).forEach((target) => {
+      ranks.set(target, Math.max(ranks.get(target), ranks.get(source) + 1));
+      incoming.set(target, incoming.get(target) - 1);
+      if (incoming.get(target) === 0) {
+        queue.push(target);
+        queue.sort(sourceOrder);
+      }
+    });
+  }
+  nodes.filter((node) => !visited.has(node.id)).forEach((node) => {
+    ranks.set(node.id, Math.max(0, node.cell_index));
+  });
+
+  const layers = new Map();
+  nodes.forEach((node) => {
+    const rank = ranks.get(node.id);
+    if (!layers.has(rank)) {
+      layers.set(rank, []);
+    }
+    layers.get(rank).push(node);
+  });
+  const positions = new Map();
+  let maxLayerSize = 1;
+  [...layers.keys()].sort((a, b) => a - b).forEach((rank) => {
+    const layer = layers.get(rank).sort((a, b) =>
+      a.cell_index - b.cell_index || a.line - b.line || a.id.localeCompare(b.id)
+    );
+    maxLayerSize = Math.max(maxLayerSize, layer.length);
+    layer.forEach((node, index) => {
+      positions.set(node.id, { x: 54 + rank * 250, y: 62 + index * 142 });
+    });
+  });
+  const maxRank = Math.max(0, ...ranks.values());
+  return {
+    positions,
+    width: Math.max(620, 108 + (maxRank + 1) * 250),
+    height: Math.max(500, 124 + maxLayerSize * 142)
+  };
+}
+
+function renderPipelineSvg() {
+  if (!currentPipelineTrace) {
+    return;
+  }
+  const svg = document.getElementById("pipeline-graph");
+  const viewport = document.getElementById("graph-viewport");
+  const empty = document.getElementById("graph-empty");
+  const { nodes, edges } = visiblePipelineElements();
+  if (!nodes.length) {
+    svg.replaceChildren();
+    viewport.classList.add("hidden");
+    empty.textContent = currentPipelineTrace.nodes.length
+      ? "No operations match the selected graph filters."
+      : "No supported pipeline operations were identified in this notebook.";
+    empty.classList.remove("hidden");
+    pipelineGraphLayout = null;
+    return;
+  }
+
+  viewport.classList.remove("hidden");
+  empty.classList.add("hidden");
+  pipelineGraphLayout = layoutPipelineGraph(nodes, edges);
+  const { width, height, positions } = pipelineGraphLayout;
+  const svgNamespace = "http://www.w3.org/2000/svg";
+  svg.replaceChildren();
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+
+  const defs = document.createElementNS(svgNamespace, "defs");
+  const marker = document.createElementNS(svgNamespace, "marker");
+  marker.setAttribute("id", "pipeline-arrow");
+  marker.setAttribute("viewBox", "0 0 10 10");
+  marker.setAttribute("refX", "9");
+  marker.setAttribute("refY", "5");
+  marker.setAttribute("markerWidth", "7");
+  marker.setAttribute("markerHeight", "7");
+  marker.setAttribute("orient", "auto");
+  const arrow = document.createElementNS(svgNamespace, "path");
+  arrow.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+  arrow.setAttribute("class", "graph-arrow");
+  marker.appendChild(arrow);
+  defs.appendChild(marker);
+  svg.appendChild(defs);
+
+  const scene = document.createElementNS(svgNamespace, "g");
+  scene.setAttribute("class", "graph-scene");
+  const visibleIds = new Set(nodes.map((node) => node.id));
+  const highlighted = graphHighlightedElements();
+  edges.forEach((edge) => {
+    const source = positions.get(edge.source);
+    const target = positions.get(edge.target);
+    const startX = source.x + 184;
+    const startY = source.y + 42;
+    const endX = target.x;
+    const endY = target.y + 42;
+    const controlX = startX + Math.max(38, (endX - startX) / 2);
+    const path = document.createElementNS(svgNamespace, "path");
+    path.setAttribute(
+      "d",
+      `M ${startX} ${startY} C ${controlX} ${startY}, ${controlX} ${endY}, ${endX} ${endY}`
+    );
+    path.setAttribute("class", "pipeline-edge");
+    path.setAttribute("marker-end", "url(#pipeline-arrow)");
+    path.setAttribute("tabindex", "0");
+    path.setAttribute("role", "button");
+    path.setAttribute(
+      "aria-label",
+      `Dependency from ${currentPipelineTrace.nodes.find((node) => node.id === edge.source).operation_name} to ${currentPipelineTrace.nodes.find((node) => node.id === edge.target).operation_name}`
+    );
+    path.dataset.edgeId = edge.id;
+    path.dataset.sourceNode = edge.source;
+    path.dataset.targetNode = edge.target;
+    path.dataset.relationship = edge.relationship;
+    path.dataset.highlighted = String(highlighted.edges.has(edge.id));
+    path.dataset.selected = String(
+      graphSelectedItem?.type === "edge" && graphSelectedItem.item.id === edge.id
+    );
+    path.dataset.dimmed = String(highlighted.active && !highlighted.edges.has(edge.id));
+    path.addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectPipelineEdge(edge.id);
+    });
+    path.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectPipelineEdge(edge.id);
+      }
+    });
+    const title = document.createElementNS(svgNamespace, "title");
+    title.textContent = edge.explanation;
+    path.appendChild(title);
+    scene.appendChild(path);
+
+    if (edge.variables.length) {
+      const label = document.createElementNS(svgNamespace, "text");
+      label.setAttribute("x", String((startX + endX) / 2));
+      label.setAttribute("y", String((startY + endY) / 2 - 7));
+      label.setAttribute("class", "pipeline-edge-label");
+      label.setAttribute("text-anchor", "middle");
+      label.textContent = edge.variables.join(", ");
+      scene.appendChild(label);
+    }
+  });
+
+  nodes.forEach((node) => {
+    const point = positions.get(node.id);
+    const group = document.createElementNS(svgNamespace, "g");
+    group.setAttribute("class", `pipeline-node node-${node.operation_type}`);
+    group.setAttribute("role", "button");
+    group.setAttribute("tabindex", "0");
+    group.setAttribute("aria-pressed", String(
+      graphSelectedItem?.type === "node" && graphSelectedItem.item.id === node.id
+    ));
+    group.setAttribute(
+      "aria-label",
+      `${node.operation_name}, ${node.display_label}, cell ${node.cell_index + 1}, line ${node.line}; ${PIPELINE_STATUS_LABELS[node.status]}`
+    );
+    group.dataset.nodeId = node.id;
+    group.dataset.cellIndex = String(node.cell_index);
+    group.dataset.status = node.status;
+    group.dataset.highlighted = String(highlighted.nodes.has(node.id));
+    group.dataset.dimmed = String(highlighted.active && !highlighted.nodes.has(node.id));
+    group.dataset.selected = String(
+      graphSelectedItem?.type === "node" && graphSelectedItem.item.id === node.id
+    );
+    group.addEventListener("click", () => selectPipelineNodeById(node.id));
+    group.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectPipelineNodeById(node.id);
+      }
+    });
+    const title = document.createElementNS(svgNamespace, "title");
+    title.textContent = `${node.source}\n${PIPELINE_STATUS_LABELS[node.status]}`;
+    group.appendChild(title);
+
+    const shape = document.createElementNS(svgNamespace, "rect");
+    shape.setAttribute("x", String(point.x));
+    shape.setAttribute("y", String(point.y));
+    shape.setAttribute("width", "184");
+    shape.setAttribute("height", "84");
+    shape.setAttribute("rx", "9");
+    shape.setAttribute("class", "pipeline-node-shape");
+    group.appendChild(shape);
+
+    const label = document.createElementNS(svgNamespace, "text");
+    label.setAttribute("x", String(point.x + 13));
+    label.setAttribute("y", String(point.y + 21));
+    label.setAttribute("class", "pipeline-node-label");
+    label.textContent = node.display_label;
+    group.appendChild(label);
+
+    const name = document.createElementNS(svgNamespace, "text");
+    name.setAttribute("x", String(point.x + 13));
+    name.setAttribute("y", String(point.y + 43));
+    name.setAttribute("class", "pipeline-node-name");
+    name.textContent = truncateGraphLabel(node.operation_name, 25);
+    group.appendChild(name);
+
+    const location = document.createElementNS(svgNamespace, "text");
+    location.setAttribute("x", String(point.x + 13));
+    location.setAttribute("y", String(point.y + 66));
+    location.setAttribute("class", "pipeline-node-location");
+    location.textContent = `Cell ${node.cell_index + 1} · line ${node.line}`;
+    group.appendChild(location);
+
+    const statusMark = document.createElementNS(svgNamespace, "text");
+    statusMark.setAttribute("x", String(point.x + 166));
+    statusMark.setAttribute("y", String(point.y + 17));
+    statusMark.setAttribute("class", `node-status-mark status-mark-${node.status}`);
+    statusMark.textContent = { green: "✓", amber: "!", red: "✕", grey: "?" }[node.status];
+    group.appendChild(statusMark);
+    scene.appendChild(group);
+  });
+  svg.appendChild(scene);
+
+  if (!graphInitialViewBox || graphInitialViewBox.width !== width || graphInitialViewBox.height !== height) {
+    graphInitialViewBox = { x: 0, y: 0, width, height };
+    graphViewBox = { ...graphInitialViewBox };
+  } else if (graphViewBox) {
+    graphViewBox = { ...graphViewBox };
+  }
+  updatePipelineViewBox();
+  if (graphSelectedItem) {
+    renderGraphItemDetails(graphSelectedItem);
+  } else {
+    showGraphSelectionEmpty();
+  }
+}
+
+function truncateGraphLabel(label, maxLength) {
+  return label.length > maxLength ? `${label.slice(0, maxLength - 1)}…` : label;
+}
+
+function graphHighlightedElements() {
+  const nodes = new Set();
+  const edges = new Set();
+  if (graphSelectedItem?.type === "node") {
+    const seed = graphSelectedItem.item.id;
+    nodes.add(seed);
+    traverseGraph(seed, "upstream").forEach((id) => nodes.add(id));
+    traverseGraph(seed, "downstream").forEach((id) => nodes.add(id));
+    currentPipelineTrace.edges.forEach((edge) => {
+      if (nodes.has(edge.source) && nodes.has(edge.target)) {
+        edges.add(edge.id);
+      }
+    });
+  } else if (graphSelectedItem?.type === "edge") {
+    nodes.add(graphSelectedItem.item.source);
+    nodes.add(graphSelectedItem.item.target);
+    edges.add(graphSelectedItem.item.id);
+  }
+  if (graphHighlightFindingPaths) {
+    const findingNodes = currentPipelineTrace.nodes.filter((node) =>
+      graphSelectedFindingId
+        ? node.finding_ids.includes(graphSelectedFindingId)
+        : node.finding_ids.length > 0
+    );
+    findingNodes.forEach((node) => {
+      nodes.add(node.id);
+      traverseGraph(node.id, "upstream").forEach((id) => nodes.add(id));
+    });
+    currentPipelineTrace.edges.forEach((edge) => {
+      if (nodes.has(edge.source) && nodes.has(edge.target)) {
+        edges.add(edge.id);
+      }
+    });
+  }
+  const active = Boolean(graphSelectedItem || graphHighlightFindingPaths);
+  return { nodes, edges, active };
+}
+
+function traverseGraph(startId, direction) {
+  const result = new Set();
+  const queue = [startId];
+  while (queue.length) {
+    const current = queue.shift();
+    const next = currentPipelineTrace.edges
+      .filter((edge) => direction === "upstream" ? edge.target === current : edge.source === current)
+      .map((edge) => direction === "upstream" ? edge.source : edge.target);
+    next.forEach((id) => {
+      if (!result.has(id)) {
+        result.add(id);
+        queue.push(id);
+      }
+    });
+  }
+  return result;
+}
+
+function selectPipelineNodeById(nodeId) {
+  const node = currentPipelineTrace.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node) {
+    return;
+  }
+  graphSelectedItem = { type: "node", item: node };
+  renderPipelineSvg();
+}
+
+function selectPipelineEdge(edgeId) {
+  const edge = currentPipelineTrace?.edges.find((candidate) => candidate.id === edgeId);
+  if (!edge) {
+    return;
+  }
+  graphSelectedItem = { type: "edge", item: edge };
+  renderPipelineSvg();
+}
+
+function showGraphSelectionEmpty() {
+  document.getElementById("graph-selection-empty").classList.remove("hidden");
+  document.getElementById("graph-node-details").classList.add("hidden");
+  document.getElementById("graph-edge-details").classList.add("hidden");
+}
+
+function renderGraphItemDetails(selection) {
+  document.getElementById("graph-selection-empty").classList.add("hidden");
+  const nodeDetails = document.getElementById("graph-node-details");
+  const edgeDetails = document.getElementById("graph-edge-details");
+  nodeDetails.classList.toggle("hidden", selection.type !== "node");
+  edgeDetails.classList.toggle("hidden", selection.type !== "edge");
+  if (selection.type === "node") {
+    const node = selection.item;
+    const edgeMap = currentPipelineTrace.edges;
+    const upstream = edgeMap.filter((edge) => edge.target === node.id);
+    const downstream = edgeMap.filter((edge) => edge.source === node.id);
+    const byId = new Map(currentPipelineTrace.nodes.map((item) => [item.id, item]));
+    document.getElementById("graph-node-heading").textContent = node.operation_name;
+    document.getElementById("graph-node-type").textContent = node.display_label;
+    document.getElementById("graph-node-location").textContent =
+      `Cell ${node.cell_index + 1}, line ${node.line}`;
+    document.getElementById("graph-node-execution").textContent =
+      node.execution_count === null
+        ? "No saved execution count"
+        : `Saved execution count ${node.execution_count} (metadata only)`;
+    document.getElementById("graph-node-evidence").textContent =
+      `${PIPELINE_STATUS_LABELS[node.status]} · ${node.evidence_status}`;
+    document.getElementById("graph-node-inputs").textContent =
+      node.input_variables.join(", ") || "No inputs recognized";
+    document.getElementById("graph-node-outputs").textContent =
+      node.output_variables.join(", ") || "No outputs recognized";
+    document.getElementById("graph-node-upstream").textContent = upstream.length
+      ? upstream.map((edge) => byId.get(edge.source)?.operation_name || edge.source).join(", ")
+      : "No connected upstream operation";
+    document.getElementById("graph-node-downstream").textContent = downstream.length
+      ? downstream.map((edge) => byId.get(edge.target)?.operation_name || edge.target).join(", ")
+      : "No connected downstream operation";
+    const findings = currentPipelineTrace.findings.filter((finding) =>
+      node.finding_ids.includes(finding.id)
+    );
+    document.getElementById("graph-node-findings").textContent = findings.length
+      ? findings.map((finding) => `${finding.title} (${finding.status})`).join("; ")
+      : "No supported finding at this source location";
+    document.getElementById("graph-node-source").textContent = node.source || "Source snippet unavailable.";
+    document.getElementById("graph-inspect-source").disabled = !Number.isInteger(node.cell_index);
+  } else {
+    const edge = selection.item;
+    const byId = new Map(currentPipelineTrace.nodes.map((item) => [item.id, item]));
+    document.getElementById("graph-edge-source").textContent =
+      byId.get(edge.source)?.operation_name || edge.source;
+    document.getElementById("graph-edge-target").textContent =
+      byId.get(edge.target)?.operation_name || edge.target;
+    document.getElementById("graph-edge-variables").textContent =
+      edge.variables.join(", ") || "No variable names (pipeline composition)";
+    document.getElementById("graph-edge-relationship").textContent =
+      edge.relationship.replaceAll("_", " ");
+    document.getElementById("graph-edge-confidence").textContent =
+      `${edge.dependency_confidence} · ${edge.evidence_status}`;
+    document.getElementById("graph-edge-explanation").textContent = edge.explanation;
+  }
+}
+
+function updatePipelineViewBox() {
+  if (!graphViewBox) {
+    return;
+  }
+  document.getElementById("pipeline-graph").setAttribute(
+    "viewBox",
+    `${graphViewBox.x} ${graphViewBox.y} ${graphViewBox.width} ${graphViewBox.height}`
+  );
+}
+
+function fitPipelineGraph() {
+  if (!pipelineGraphLayout) {
+    return;
+  }
+  const viewport = document.getElementById("graph-viewport");
+  const aspect = viewport.clientWidth && viewport.clientHeight
+    ? viewport.clientWidth / viewport.clientHeight
+    : pipelineGraphLayout.width / pipelineGraphLayout.height;
+  const width = Math.max(
+    pipelineGraphLayout.width,
+    pipelineGraphLayout.height * aspect
+  );
+  const height = Math.max(
+    pipelineGraphLayout.height,
+    pipelineGraphLayout.width / aspect
+  );
+  graphViewBox = {
+    x: (pipelineGraphLayout.width - width) / 2,
+    y: (pipelineGraphLayout.height - height) / 2,
+    width,
+    height
+  };
+  updatePipelineViewBox();
+}
+
+function resetPipelineGraph() {
+  if (!graphInitialViewBox) {
+    return;
+  }
+  graphViewBox = { ...graphInitialViewBox };
+  updatePipelineViewBox();
+}
+
+function zoomPipelineGraph(factor) {
+  if (!graphViewBox) {
+    return;
+  }
+  const width = graphViewBox.width * factor;
+  const height = graphViewBox.height * factor;
+  graphViewBox = {
+    x: graphViewBox.x + (graphViewBox.width - width) / 2,
+    y: graphViewBox.y + (graphViewBox.height - height) / 2,
+    width,
+    height
+  };
+  updatePipelineViewBox();
+}
+
+function highlightGraphForFinding(finding) {
+  graphSelectedItem = null;
+  graphSelectedFindingId = finding.id;
+  graphHighlightFindingPaths = true;
+  document.getElementById("graph-highlight-findings").setAttribute("aria-pressed", "true");
+  renderPipelineSvg();
+  window.location.hash = "#pipeline";
+}
+
 function renderFindings(findings) {
   const list = document.getElementById("findings-list");
   list.replaceChildren();
@@ -745,45 +1627,12 @@ function renderFindings(findings) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "finding-select";
-    button.textContent = `Inspect evidence in cell${finding.cell_indices.length === 1 ? "" : "s"} ${finding.cell_indices.map((index) => index + 1).join(", ")}`;
+    button.textContent = `Highlight finding path · cell${finding.cell_indices.length === 1 ? "" : "s"} ${finding.cell_indices.map((index) => index + 1).join(", ")}`;
     button.addEventListener("click", () => {
       highlightGraphForFinding(finding);
-      selectCell(finding.cell_indices[0]);
-      window.location.hash = "#cells";
     });
     item.append(heading, meta, description, explanation, caveat, button);
     list.appendChild(item);
-  });
-}
-
-function highlightGraphForFinding(finding) {
-  const related = new Set(finding.cell_indices.map((index) => String(index)));
-  const relatedNodeIds = new Set();
-  document.querySelectorAll("#graph-nodes button").forEach((button) => {
-    const selected = related.has(button.dataset.cellIndex);
-    button.setAttribute("aria-current", String(selected));
-    if (selected) {
-      relatedNodeIds.add(button.dataset.nodeId);
-    }
-  });
-  document.querySelectorAll(".pipeline-node").forEach((node) => {
-    node.dataset.highlighted = String(related.has(node.dataset.cellIndex));
-  });
-  document.querySelectorAll(".graph-edge").forEach((edge) => {
-    const nodeIds = new Set(
-      [...document.querySelectorAll("#graph-nodes button")]
-        .filter((button) => related.has(button.dataset.cellIndex))
-        .map((button) => button.dataset.nodeId)
-    );
-    edge.dataset.highlighted = String(
-      nodeIds.has(edge.dataset.sourceNode) || nodeIds.has(edge.dataset.targetNode)
-    );
-  });
-  document.querySelectorAll(".pipeline-edge").forEach((edge) => {
-    edge.dataset.highlighted = String(
-      relatedNodeIds.has(edge.dataset.sourceNode) ||
-      relatedNodeIds.has(edge.dataset.targetNode)
-    );
   });
 }
 

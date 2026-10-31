@@ -119,6 +119,46 @@
               <ul id="operations-list" class="compact-list"></ul>
             </article>
           </div>
+          <section class="workspace-card dataset-card" aria-labelledby="dataset-analysis-heading">
+            <h3 id="dataset-analysis-heading">Analyze an explicitly uploaded CSV</h3>
+            <p class="card-note">
+              CodeTrace analyzes only the CSV you select here. It does not open dataset paths
+              mentioned in notebook source or retain uploaded rows.
+            </p>
+            <form id="dataset-upload-form" class="dataset-upload-form">
+              <label class="upload-label" for="dataset-file">CSV dataset</label>
+              <p class="upload-hint" id="dataset-upload-hint">UTF-8 .csv, up to 10 MB.</p>
+              <input
+                class="upload-input"
+                id="dataset-file"
+                name="file"
+                type="file"
+                accept=".csv,text/csv"
+                aria-describedby="dataset-upload-hint dataset-upload-message"
+              />
+              <p class="upload-message hidden" id="dataset-upload-message" role="status" aria-live="polite"></p>
+              <div class="upload-actions">
+                <button class="btn" id="dataset-upload-btn" type="submit">Analyze CSV</button>
+              </div>
+            </form>
+            <section id="dataset-results" class="dataset-results hidden" aria-labelledby="dataset-results-heading">
+              <h4 id="dataset-results-heading">Dataset profile</h4>
+              <p id="dataset-summary" class="card-note"></p>
+              <div class="dataset-table-wrap" tabindex="0" aria-label="Scrollable dataset column profile">
+                <table class="dataset-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Column</th>
+                      <th scope="col">Inferred type</th>
+                      <th scope="col">Missing</th>
+                      <th scope="col">Numeric summary</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dataset-columns"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
           <p class="caveat-note" id="overview-limitations"></p>
           <section class="notebook-preview" aria-labelledby="notebook-preview-heading">
             <h3 id="notebook-preview-heading">Notebook contents</h3>
@@ -129,40 +169,82 @@
 
         <section class="workspace-section workspace-page hidden" id="pipeline-section" data-workspace-page="pipeline">
           <h2>Pipeline Trace</h2>
-          <p class="section-description">Follow every recognized operation from data loading through evaluation. Stages follow notebook source order and do not imply execution order; dashed links are inferred from shared variables, not observed data transfer.</p>
-          <div class="graph-layout">
-            <div class="workspace-card graph-card">
-              <h3>Workflow map</h3>
-              <p class="card-note" id="workflow-summary"></p>
-              <div class="graph-legend" aria-label="Pipeline graph legend">
-                <span><i class="legend-shape source-shape" aria-hidden="true"></i>Data source</span>
-                <span><i class="legend-shape transform-shape" aria-hidden="true"></i>Feature / preprocessing</span>
-                <span><i class="legend-shape split-shape" aria-hidden="true"></i>Split</span>
-                <span><i class="legend-shape model-shape" aria-hidden="true"></i>Model</span>
-                <span><i class="legend-shape step-shape" aria-hidden="true"></i>Fit / predict / evaluate</span>
-                <span><i class="legend-cross" aria-hidden="true">×</i>Finding at this source location</span>
-              </div>
-              <div class="graph-viewport" id="graph-viewport" tabindex="0" aria-label="Scrollable static pipeline graph">
-                <svg id="pipeline-graph" class="pipeline-graph" role="group" aria-label="Static notebook pipeline visualization"></svg>
-              </div>
-              <p class="empty-state hidden" id="graph-empty">No supported pipeline could be reconstructed from the recognized source patterns.</p>
-              <h4 class="workflow-heading">Notebook workflow stages</h4>
-              <div class="workflow-viewport" tabindex="0" aria-label="Scrollable workflow stages in notebook source order">
-                <ol id="workflow-stages" class="workflow-stages"></ol>
-              </div>
-              <ul id="graph-nodes" class="selectable-list hidden"></ul>
-            </div>
-            <div class="workspace-card graph-details">
-              <details>
-                <summary>Inferred relationships and unresolved references</summary>
-                <h3>Inferred relationships</h3>
-                <ul id="graph-edges" class="compact-list"></ul>
-                <h3>Unresolved references</h3>
-                <ul id="graph-unresolved" class="compact-list"></ul>
-              </details>
-            </div>
+          <p class="section-description">Connected paths are generated from recognized source operations and variable dependencies, not cell order alone. All links are static evidence and do not prove runtime data transfer.</p>
+          <p id="pipeline-status" class="graph-status" role="status" aria-live="polite"></p>
+          <p id="pipeline-error" class="empty-state hidden" role="alert"></p>
+          <div class="graph-legend" aria-label="Pipeline graph legend">
+            <span><i class="status-swatch status-green" aria-hidden="true"></i>Analyzed; no supported issue detected</span>
+            <span><i class="status-swatch status-amber" aria-hidden="true">!</i>Potential finding</span>
+            <span><i class="status-swatch status-red" aria-hidden="true">✕</i>Confirmed finding</span>
+            <span><i class="status-swatch status-grey" aria-hidden="true">?</i>Insufficient evidence</span>
+            <span><i class="edge-swatch edge-direct" aria-hidden="true"></i>Explicit source-variable reference</span>
+            <span><i class="edge-swatch edge-composition" aria-hidden="true"></i>Explicit estimator composition</span>
           </div>
-          <p class="caveat-note">Select a node to inspect its source cell. A red × marks a node at a supported potential finding location; it is not a confirmed runtime failure. Dashed connections are inferred references, not observed data transfer.</p>
+          <div class="graph-controls" aria-label="Pipeline graph controls">
+            <button class="text-button graph-control" id="graph-zoom-in" type="button" aria-label="Zoom in">Zoom in +</button>
+            <button class="text-button graph-control" id="graph-zoom-out" type="button" aria-label="Zoom out">Zoom out −</button>
+            <button class="text-button graph-control" id="graph-fit" type="button">Fit graph</button>
+            <button class="text-button graph-control" id="graph-reset" type="button">Reset position</button>
+            <button class="text-button graph-control" id="graph-highlight-findings" type="button" aria-pressed="false">Highlight finding paths</button>
+          </div>
+          <div class="graph-filters">
+            <fieldset>
+              <legend>Operation types</legend>
+              <div id="graph-type-filters" class="graph-type-filters"></div>
+            </fieldset>
+            <label for="graph-finding-filter">Finding status</label>
+            <select id="graph-finding-filter" class="graph-filter-select">
+              <option value="all">All operations</option>
+              <option value="findings">Operations with findings</option>
+              <option value="no-findings">Operations without findings</option>
+            </select>
+          </div>
+          <div class="pipeline-trace-layout">
+            <section class="workspace-card graph-card" aria-label="Connected ML pipeline graph">
+              <div class="graph-viewport" id="graph-viewport" tabindex="0" aria-label="Interactive pipeline dependency map. Drag empty space to pan and use the mouse wheel to zoom.">
+                <svg id="pipeline-graph" class="pipeline-graph" role="group" aria-label="Interactive static pipeline dependency graph"></svg>
+              </div>
+              <p class="empty-state hidden" id="graph-empty">No supported pipeline operations were identified in this notebook.</p>
+            </section>
+            <aside class="workspace-card graph-inspector" aria-live="polite" aria-label="Selected graph item details">
+              <p id="graph-selection-empty" class="empty-state">Select a node or directed edge to inspect its source evidence.</p>
+              <section id="graph-node-details" class="hidden">
+                <h3 id="graph-node-heading"></h3>
+                <dl class="graph-detail-list">
+                  <dt>Operation type</dt><dd id="graph-node-type"></dd>
+                  <dt>Notebook location</dt><dd id="graph-node-location"></dd>
+                  <dt>Execution metadata</dt><dd id="graph-node-execution"></dd>
+                  <dt>Evidence status</dt><dd id="graph-node-evidence"></dd>
+                  <dt>Input variables</dt><dd id="graph-node-inputs"></dd>
+                  <dt>Output variables</dt><dd id="graph-node-outputs"></dd>
+                  <dt>Upstream operations</dt><dd id="graph-node-upstream"></dd>
+                  <dt>Downstream operations</dt><dd id="graph-node-downstream"></dd>
+                  <dt>Associated findings</dt><dd id="graph-node-findings"></dd>
+                </dl>
+                <pre id="graph-node-source" class="graph-source"></pre>
+                <button class="text-button" id="graph-inspect-source" type="button">Open source cell</button>
+              </section>
+              <section id="graph-edge-details" class="hidden">
+                <h3>Dependency details</h3>
+                <dl class="graph-detail-list">
+                  <dt>Source</dt><dd id="graph-edge-source"></dd>
+                  <dt>Destination</dt><dd id="graph-edge-target"></dd>
+                  <dt>Connecting variables</dt><dd id="graph-edge-variables"></dd>
+                  <dt>Relationship</dt><dd id="graph-edge-relationship"></dd>
+                  <dt>Support</dt><dd id="graph-edge-confidence"></dd>
+                  <dt>Explanation</dt><dd id="graph-edge-explanation"></dd>
+                </dl>
+              </section>
+            </aside>
+          </div>
+          <details class="graph-details">
+            <summary>Accessible edge list and unresolved input references</summary>
+            <h3>Graph dependencies</h3>
+            <ul id="graph-edges" class="compact-list"></ul>
+            <h3>Unresolved inputs</h3>
+            <ul id="graph-unresolved" class="compact-list"></ul>
+          </details>
+          <p class="caveat-note">Green means no supported issue was detected at that operation; it does not guarantee pipeline safety. Potential findings are amber. Red is reserved for explicitly confirmed findings; existing static checks produce potential findings only. Grey indicates fallback/unknown evidence.</p>
         </section>
 
         <section class="workspace-section workspace-page hidden" id="audit-section" data-workspace-page="audit">
