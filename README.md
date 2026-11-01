@@ -22,48 +22,6 @@ The current implementation validates and parses notebooks, identifies a defined 
 
 ---
 
-## Feature Status
-
-| Feature | Status |
-|---|---|
-| FastAPI root endpoint (`GET /`) | Implemented |
-| FastAPI health endpoint (`GET /api/health`) | Implemented |
-| Automatic API health indicator in brand symbol | Implemented |
-| Notebook upload, nbformat v4 validation, and safe kernel/language metadata display | Implemented; arbitrary notebook metadata is not exposed |
-| Cell metadata, source, and AST-based operation extraction | Implemented |
-| Explicit CSV dataset profiling (shape, inferred types, missingness, numeric summaries) | Implemented; bounded and aggregate-only |
-| Source-linked operation graph with inferred variable links | Implemented; partial static-analysis coverage |
-| Interactive pipeline dependency map with node/edge inspection and filters | Implemented; static evidence only |
-| Evidence-linked checks for preprocessing, target, test-set, and evaluation risks | Implemented; bounded static rules |
-| Explicit train/test CSV overlap checks | Implemented; caller supplies both splits, optional identifier/group columns, and the evaluation objective |
-| Deterministic repair proposals and separately generated corrected notebooks | Implemented for narrow, validated preprocessing and literal target-column patterns |
-| Static analysis of approved corrected notebook versions | Implemented; corrected graph is source-derived and separate from original findings |
-| User approval/rejection before repair generation | Implemented in the Repair Center; decisions remain in the current browser session |
-| Explicit original/corrected notebook experiments | Implemented; each run has a separate execution ID and Docker container |
-| Explicit paired run using the same attached dataset IDs | Implemented after a corrected notebook is generated from approved repair evidence |
-| Offline, resource-limited notebook execution | Implemented with Docker-only isolation; unavailable when Docker or the runner image is unavailable |
-| Persisted execution status, cell outputs/errors, package metadata, and executed notebook artifact | Implemented in SQLite; capability-token authorized |
-| Persisted paired experiment metadata and side-by-side results | Implemented; reports both execution states, captured metrics, logs, setup, and verification evidence |
-| Repair verification using stored approved repairs and original/corrected execution records | Implemented with per-finding evidence, statuses, and limitations; does not infer success from execution alone |
-| Original/corrected metric comparison | Implemented for explicitly labeled output metrics when datasets and recorded model, split protocol, seed, runtime, and relevant package settings match; repair-related feature-expression changes are documented |
-| Cell Explorer and persisted HTML, PDF, and JSON evidence reports | Implemented from stored CodeTrace records; partial workflows are labeled |
-| Objective-aware group-overlap visualization | Implemented for explicitly uploaded split CSVs with temporary anonymized entity labels; does not claim notebook execution assignments or rewrite notebook split code |
-| Comprehensive or runtime-verified leakage/data-flow detection | Not implemented |
-
----
-
-## Technology Stack
-
-| Layer | Technology |
-|---|---|
-| Frontend | HTML 5, Vanilla CSS, Vanilla JavaScript |
-| Backend | Python 3.11+, FastAPI, Uvicorn, nbformat, SQLite |
-| Report exports | ReportLab 4.4.4 for PDF; generated HTML and JSON use the Python standard library |
-| Isolated execution | Docker, Python 3.12 runner image, nbclient, ipykernel |
-| Upload handling | python-multipart |
-| Testing | pytest, httpx, pytest-asyncio |
-| Environment | Python `venv` |
-
 ## Architecture
 
 The application has a static frontend and a FastAPI backend:
@@ -92,23 +50,6 @@ Execution orchestration currently runs in one FastAPI process; use one Uvicorn w
 ## End-to-End Workflow
 
 **Available workflow:** start the API and serve the static frontend. The About page is the default landing page when opened without a route; choose Inspect Notebook when ready to upload. The top navigation stays visible while the rest of the page scrolls. The header symbol checks `/api/health` on load and every 15 seconds. Choose and upload a notebook; after successful validation, the upload form is replaced by a notebook summary and separate navigation buttons for Overview, Pipeline Trace, Leakage & Evaluation Audit, Repair Center, Experiments, Verification, Cell Explorer, and Reports. Each button opens its own focused view rather than appending every section to one long page. Overview shows the standard kernel/language metadata when present, imported library names, individual imports, notebook dataset path references, recognized operations, and every notebook cell's source in notebook order. It also lets you separately upload a CSV for aggregate dataset profiling; notebook-referenced paths are never opened. Pipeline Trace displays an interactive dependency graph generated from the notebook analysis response. Zoom, pan, fit/reset, operation-type and finding-status filters, node/edge selection, upstream/downstream highlighting, and finding-path highlighting are available. In Repair Center, inspect the original and proposed code, diff, explanation, and validation; approve or reject proposals individually. Only explicitly approved, validated notebook repairs can be submitted to generate a separate corrected file. Dataset overlap findings remain manual because they are not linked to notebook split source. In Experiments, explicitly associate datasets, select the original or approved corrected notebook, and start each execution separately; monitor status and cell outputs/errors and download the executed artifact. In Reports, explicitly generate an immutable snapshot, preview its HTML, download HTML/PDF/JSON, and download available persisted notebook artifacts. Dataset analysis by itself does not associate a CSV with a notebook. Use Notebook summary to return to the summary, or Choose another notebook to start a fresh upload.
-
-### Static analysis coverage
-
-The analyzer scans Python code cells independently with `ast.parse`. It recognizes common imports; data readers such as `read_csv` and `read_parquet`; common preprocessing constructors and transforms; common train/test split calls; estimator names ending in `Classifier`, `Regressor`, `Model`, or `Estimator` plus selected common names; `fit`, prediction, and common metric calls. It reports source locations and simple assignment-to-operation relationships where variable identifiers are visible. Markdown is parsed as content, not Python. A syntax-error cell receives limited regex fallback for split, fit, predict, and score calls and is marked as a limitation.
-
-The notebook upload analysis applies the following bounded rules:
-
-| Rule ID | Trigger | Severity / confidence | Classification and limitation |
-|---|---|---|---|
-| `test_data_used_for_fit` | A recognizable fit operation receives a test-named variable | High / high | Potential risk; names do not prove the variable's contents or intent. |
-| `evaluation_on_training_data` | A metric/score operation receives a train-named variable | Medium / medium | Training-set scoring can be intentional; source does not establish purpose. |
-| `preprocessing_fit_before_split` | A recognized learned transform's fitted output or input is source-linked to a later split | Medium / medium | Potential risk; source order and variable links do not prove runtime rows. Stateless transforms and constructors alone are not flagged. |
-| `target_column_in_features` | A literal feature-column selection matches the literal column used to construct the split target | High / high | Direct source evidence, not proof of actual dataframe contents or modeling intent. |
-| `target_variable_in_features` | A feature assignment directly depends on the target argument supplied to a recognized split | High / medium | Static dependency may not mean target values are present at runtime. |
-| `suspicious_outcome_feature` | A selected feature name matches a narrow post-outcome/future-name pattern | Low / low | Heuristic suspicion only; domain meaning is unknown. |
-| `test_metric_used_for_model_selection` | A metric on test-named input is reused in a later `if`/`while` condition | High / medium | Potential contamination; intent and runtime branch behavior are unknown. Repeated final metrics alone are not flagged. |
-| `classification_split_without_stratify_review` | A source-linked split feeds a recognized classifier and omits `stratify=` | Informational / low | Review prompt only; the engine does not know class balance or whether stratification is appropriate. |
 
 ### Explicit CSV dataset analysis
 
@@ -223,56 +164,60 @@ Notebook upload, parsing, and static analysis never execute, import, or evaluate
 ```text
 CodeTrace/
 ├── frontend/
-│   ├── index.html          # Inspect/About navigation and notebook workspace
+│   ├── index.html  
 │   ├── css/
-│   │   └── style.css       # Responsive light theme
+│   │   └── style.css      
 │   └── js/
-│       └── app.js          # Health, upload, workspace, repair, and report UI
+│       └── app.js      
 ├── backend/
 │   ├── app/
-│   │   ├── main.py         # FastAPI notebook, experiment, verification, report, and artifact APIs
+│   │   ├── main.py        
 │   │   ├── services/
-│   │   │   ├── notebook_parser.py # nbformat validation and extraction
-│   │   │   ├── notebook_analyzer.py # AST metadata and pipeline operations
-│   │   │   ├── pipeline_trace.py # Source-evidence dependency graph builder
-│   │   │   ├── detection_engine.py # Notebook leakage/evaluation rules
-│   │   │   ├── dataset_overlap.py # Explicit train/test CSV comparison
-│   │   │   ├── repair_engine.py # Finding classification, source transforms, validation
-│   │   │   ├── audit_analyzer.py # Initial source-pattern audit rules
-│   │   │   ├── dataset_analyzer.py # Explicit CSV profiling
-│   │   │   ├── execution_store.py # SQLite notebook, dataset, and run persistence
-│   │   │   ├── verification_engine.py # Finding verification and metric comparison
-│   │   │   ├── report_service.py # Persisted evidence aggregation and HTML/PDF export
-│   │   │   ├── execution_manager.py # Background run lifecycle
-│   │   │   └── docker_runner.py # Docker-only isolated execution
-│   │   ├── api/            # Package scaffold
-│   │   ├── analyzers/      # Package scaffold
+│   │   │   ├── notebook_parser.py 
+│   │   │   ├── notebook_analyzer.py
+│   │   │   ├── pipeline_trace.py
+│   │   │   ├── detection_engine.py
+│   │   │   ├── dataset_overlap.py 
+│   │   │   ├── repair_engine.py 
+│   │   │   ├── audit_analyzer.py 
+│   │   │   ├── dataset_analyzer.py
+│   │   │   ├── execution_store.py 
+│   │   │   ├── verification_engine.py
+│   │   │   ├── report_service.py
+│   │   │   ├── execution_manager.py 
+│   │   │   └── docker_runner.py 
+│   │   ├── api/           
+│   │   ├── analyzers/    
 │   │   └── models/
-│   │       ├── notebook.py # Notebook upload response models
-│   │       ├── dataset.py  # CSV analysis response models
-│   │       ├── execution.py # Experiment request/result models
-│   │       └── verification.py # Verification request model
+│   │       ├── notebook.py
+│   │       ├── dataset.py
+│   │       ├── execution.py
+│   │       └── verification.py 
 │   └── execution/
-│       ├── Dockerfile      # Prebuilt, non-root Python notebook runtime
-│       └── runner.py       # Container-side nbclient execution and output limits
+│       ├── Dockerfile     
+│       └── runner.py    
 ├── tests/
-│   ├── test_main.py        # Health endpoint tests
-│   ├── test_notebook_upload.py # Upload validation tests
-│   ├── test_notebook_analyzer.py # Static analysis tests
-│   ├── test_detection_engine.py # Leakage/evaluation rule tests
-│   ├── test_pipeline_trace.py # Pipeline graph shape/dependency tests
-│   ├── test_dataset_analysis.py # CSV profile tests
-│   ├── test_dataset_overlap.py # Train/test overlap tests
-│   ├── test_repair_engine.py # Repair proposals, validation, conflicts, generation
-│   ├── test_execution.py   # Mocked isolated execution, auth, persistence, limits, cleanup
-│   ├── test_verification.py # Repair evidence, statuses, metrics, and auth
-│   └── test_reports.py     # Report snapshots, exports, redaction, and artifact access
+│   ├── test_main.py       
+│   ├── test_notebook_upload.py
+│   ├── test_notebook_analyzer.py 
+│   ├── test_detection_engine.py
+│   ├── test_pipeline_trace.py 
+│   ├── test_dataset_analysis.py
+│   ├── test_dataset_overlap.py
+│   ├── test_repair_engine.py
+│   ├── test_execution.py 
+│   ├── test_verification.py
+│   └── test_reports.py    
 ├── testing/
 │   ├── clean_ml_workflow.ipynb
 │   ├── mixed_cells_syntax_fallback.ipynb
+│   ├── paired_churn.csv
+│   ├── paired_preprocessing_leakage.ipynb
 │   ├── preprocessing_before_split.ipynb
+│   ├── safe_pipeline_workflow.ipynb
 │   ├── sample_dataset.csv
 │   ├── sample_notebook.ipynb
+│   ├── target_column_leakage.ipynb
 │   ├── test_data_fit_risk.ipynb
 │   ├── test_split_overlap.csv
 │   ├── train_split_overlap.csv
@@ -285,65 +230,7 @@ CodeTrace/
 
 ---
 
-## Prerequisites
-
-- Python 3.11 or later for the API — <https://www.python.org/downloads/>
-- Docker Desktop or Docker Engine for isolated experiments
-- Git — <https://git-scm.com/>
-- A modern browser (Chrome, Firefox, Edge)
-- (Optional) VS Code with the Live Server extension for serving the frontend
-
----
-
-## Setup
-
-### 1. Clone the repository
-
-```bash
-git clone <repository-url>
-cd CodeTrace
-```
-
-### 2. Use the project virtual environment
-
-**Windows PowerShell:**
-
-```powershell
-.\venv\Scripts\Activate.ps1
-```
-
-The project already uses a virtual environment named `venv`; do not recreate it. For a fresh checkout only, create it first with `python -m venv venv`.
-
-> If PowerShell blocks the activation script, run this once in your user account:
-> ```powershell
-> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-> ```
-
-**macOS / Linux:**
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Running the Application
-
-### Start the backend (Terminal 1)
-
-```powershell
-.\venv\Scripts\Activate.ps1
-uvicorn backend.app.main:app --reload
-```
-
-The API will be available at `http://127.0.0.1:8000`. From the project root, `.\venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload` uses the existing Windows virtual environment without requiring activation.
+## Backend Status
 
 | Method and path | Description | Response |
 |---|---|---|
@@ -380,23 +267,6 @@ The API will be available at `http://127.0.0.1:8000`. From the project root, `.\
 | `GET /api/notebooks/{notebook_id}/artifacts/datasets/{dataset_id}` | Downloads a dataset explicitly associated with the notebook | Capability-authorized original CSV bytes |
 | `GET /api/notebooks/{notebook_id}/artifacts/executions/{execution_id}` | Downloads an associated executed notebook artifact | Capability-authorized attachment only when stored |
 
-Notebook execution-related APIs require the `Authorization: Bearer <access_token>` header, using the capability token returned by the notebook upload response. The random token is a capability for that notebook and its approved corrected version; it is returned only at upload and retained in frontend memory. It is not a user-account system. `POST /api/notebooks/repairs/generate` accepts multipart `file`, `repair_ids` (a JSON array of repair IDs from the analysis response), and `notebook_id`; the frontend also sends the bearer token. Existing callers that omit `notebook_id` retain the legacy download-only behavior. FastAPI's interactive documentation is available at `http://127.0.0.1:8000/docs` while the local server is running.
-
-### Phase 5 isolated execution
-
-Install/start Docker Desktop (Windows) or Docker Engine (Linux/macOS), then build the runner image from the repository root:
-
-```powershell
-docker build -f backend\execution\Dockerfile -t codetrace-notebook-runner:latest backend\execution
-```
-
-The runner image pins `nbclient`, `ipykernel`, and `nbformat`. Additional Python libraries must be deliberately baked into a locally built runner image; CodeTrace never installs packages declared by a notebook and execution has no network access. To use a differently named image, set `CODETRACE_EXECUTION_IMAGE` before starting the API. Docker and the image must already be available; otherwise execution is marked `unavailable`, with no host-execution fallback.
-
-Each explicit execution creates a fresh container. The API mounts the selected notebook and only the explicitly associated datasets read-only; results are written to a size-limited container tmpfs and streamed back with bounded `docker exec` reads before the container is stopped (tmpfs contents do not survive container exit). The runner waits up to 30 seconds for artifact collection if the host becomes unresponsive. The container runs as UID 10001, with `--network none`, a read-only root filesystem, dropped Linux capabilities, no-new-privileges, a 1 CPU limit, 1 GiB memory, 64 processes, a 300-second timeout, and bounded tmpfs storage/output. It receives no host environment variables, credentials, API keys, Docker socket, or host output directory. Container and per-run temporary files are removed after the run. Each container uses its own working directory and is not given files associated with another notebook/run.
-
-Every execution version has its own ID and container. Generating/approving a corrected notebook does not start it. The single-run control still starts one selected version; the separate **Start original + corrected runs** action starts a paired experiment only after an approved correction exists and at least one associated dataset is selected. Both runs receive the identical selected dataset IDs and run in separate fresh containers. The pair is persisted with both execution IDs. An execution stores actual start/completion times, duration, status, cell counts and outputs, failure details, container Python/package versions, environment limits, dataset references, bounded logs, and an executed notebook artifact when available. Statuses are `queued`, `running`, `completed`, `failed`, `timed_out`, `cancelled`, and `unavailable`.
-
-The execution API is designed for one FastAPI process/worker because the background task queue is in-process; SQLite status/artifact records persist, but queued work is not a distributed durable job queue. The API has no login or multi-user account model. Treat notebook execution tokens as secrets and protect the SQLite data directory. CORS is restricted to the configured local development origins, so serve the frontend through Live Server (`http://127.0.0.1:5500`) or the documented local HTTP server; opening it as `file://` is intentionally unsupported. Docker isolation reduces risk but is not a proof against container runtime/kernel vulnerabilities or resource exhaustion outside configured limits. Do not treat this local development setup as a hardened multi-tenant service.
 
 ### Phase 6 repair verification and experiment comparison
 
@@ -542,73 +412,18 @@ The parser uses `nbformat.reads(..., as_version=nbformat.NO_CONVERT)` and `nbfor
 
 CSV analysis is a separate explicit upload. It does not follow or open paths extracted from a notebook, and it does not persist the CSV or return individual values.
 
-### Serve the frontend (Terminal 2)
+### Example notebooks in `testing/`
 
-**Option A – VS Code Live Server (recommended):**
+- `paired_preprocessing_leakage.ipynb` + `paired_churn.csv`: end-to-end example for detecting the scaler-before-split issue, reviewing and approving its generated repair, and running the paired comparison. Attach `paired_churn.csv` to the notebook before starting the paired run.
+- `safe_pipeline_workflow.ipynb` + `paired_churn.csv`: comparison case where preprocessing is inside a pipeline fitted after the split.
+- `target_column_leakage.ipynb` + `paired_churn.csv`: static target-feature leakage detection and repair-review example; it is not intended to produce experiment metrics.
+- `train_split_overlap.csv` and `test_split_overlap.csv`: existing explicit CSVs for the separate training/testing overlap review; select the identifier or group column in the audit.
+- `sample_notebook.ipynb` and `sample_dataset.csv`: lightweight upload and dataset-profile examples.
 
-1. Open the project in VS Code.
-2. Right-click `frontend/index.html` → **Open with Live Server**.
-3. The page opens at `http://127.0.0.1:5500`.
-
-**Option B – Python's built-in HTTP server:**
-
-```powershell
-cd frontend
-..\venv\Scripts\python.exe -m http.server 5500
-```
-
-Then open `http://127.0.0.1:5500` in your browser.
-
-The frontend must be served from one of the configured local HTTP origins; `file://` origins are intentionally not allowed.
+The notebook runner executes only in the isolated Docker environment. The default runner image includes notebook execution dependencies, but not pandas or scikit-learn; paired examples requiring those packages will fail until the runner image is deliberately built with them. Static analysis and repair review do not require notebook execution.
 
 ---
-
-## Running Tests
-
-```powershell
-.\venv\Scripts\python.exe -m pytest tests\ -v
-```
-
-The tests cover root and health endpoints, upload validation, static notebook analysis, graph links, leakage/evaluation findings, dataset profiles/overlap, repair classification, positive and negative repair patterns, conflicts, notebook metadata/output handling, and repaired-notebook generation. Run the suite to see current results.
-
----
-
-## Manual Verification
-
-1. Start the backend with `uvicorn backend.app.main:app --reload`.
-2. Open `http://127.0.0.1:8000/api/health` in a browser — you should see the JSON health response.
-3. Open the frontend page in a browser.
-4. Wait for the `</>` symbol in the header to turn green after the health check succeeds.
-5. Upload `testing/sample_notebook.ipynb` or another valid notebook.
-6. In Overview, optionally upload `testing/sample_dataset.csv` to review its measured row count, column types, missing values, and numeric summaries.
-7. In Leakage & Evaluation Audit, optionally upload separate training/test CSV files and configure identifier/group columns for overlap checks.
-8. Review Pipeline Trace, Leakage & Evaluation Audit, Repair Center, and Cell Explorer. Confirm graph links are labeled as inferred and source is shown as text.
-9. In Repair Center, compare the proposed code and diff, reject or explicitly approve a proposal, and generate a separate corrected notebook. Confirm the original upload is unchanged.
-10. In Experiments, explicitly attach any required CSV files, select **Original notebook**, and start execution. If a corrected notebook was generated, select it and start a second execution explicitly.
-11. Review execution status, duration, cell outputs/errors, and download the executed notebook when an artifact is available.
-12. Download the evidence report and inspect its notebook details, notebook and dataset findings, graph, definitions, and limitations.
-13. Stop the backend — within the next health check, the symbol should turn red. An upload attempt should show a connection error.
-
----
-
-## Limitations
-
-- Only nbformat v4 JSON notebooks up to the configured size limit can be uploaded. Experiment notebook bytes, associated datasets, and execution artifacts are persisted in the configured SQLite store.
-- AST analysis covers common Python syntax and selected patterns. Syntax-error cells receive a limited source-text fallback or remain unresolved.
-- Variable-name matches do not prove value relationships. Control flow, branches, dynamic aliases, reassignment semantics, and target-derived feature leakage are not comprehensively analyzed.
-- Audit results require human review. Exact row duplicates are not proof of same-entity overlap; identifier semantics depend on user configuration. No labeled benchmark or measured precision/recall is available.
-- Repair templates support only simple source patterns. Target-derived features, group-aware splits, test-set-driven tuning, complex preprocessing, and multiple conflicting edits require manual changes. Syntax, static-rule, and nbformat validation do not prove a repair correct; Phase 5 does not automatically verify repairs or compare model metrics.
-- Notebook-referenced datasets are not loaded automatically. CSV profiling is aggregate-only; overlap analysis compares only separately uploaded split files and does not infer notebook-to-file correspondence. For execution, datasets must be explicitly associated and selected; notebook execution uses Docker and is never performed on the API host.
-- The frontend API base URL is configured in `frontend/js/app.js`.
-- CORS origins are intended for local development and are not a production security policy. The per-notebook token is capability authorization, not account authentication.
-- No multi-user identity system, distributed queue, or production hardening is provided.
 
 ## Research Evaluation
 
 No benchmark dataset, annotation protocol, baseline comparison, or measured detection result has been produced yet. A future evaluation should use a documented, labeled set of notebooks, define annotation criteria for each target pattern, and report precision, recall, and F1 with error analysis. Any results should be compared with a stated baseline and should distinguish syntactic matches from cases requiring contextual interpretation. This is an evaluation recommendation, not a completed or implemented capability.
-
----
-
-## License
-
-To be decided at a later stage.
