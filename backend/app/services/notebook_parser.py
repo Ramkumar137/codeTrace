@@ -9,6 +9,29 @@ from backend.app.services.notebook_analyzer import analyze_notebook
 from backend.app.services.pipeline_trace import build_pipeline_trace
 from backend.app.services.repair_engine import build_repair_catalog
 
+
+_DISPLAYED_METADATA_FIELDS = {
+    "kernelspec": ("name", "display_name", "language"),
+    "language_info": ("name", "version"),
+}
+
+
+def _display_notebook_metadata(metadata: Any) -> dict[str, dict[str, str]]:
+    displayed: dict[str, dict[str, str]] = {}
+    for section, allowed_fields in _DISPLAYED_METADATA_FIELDS.items():
+        section_metadata = metadata.get(section)
+        if not isinstance(section_metadata, dict):
+            continue
+        values = {
+            key: value
+            for key in allowed_fields
+            if isinstance((value := section_metadata.get(key)), str)
+        }
+        if values:
+            displayed[section] = values
+    return displayed
+
+
 class NotebookParseError(Exception):
     """A user-correctable error in an uploaded notebook."""
 
@@ -99,6 +122,7 @@ def parse_notebook(filename: str, content: bytes) -> dict[str, Any]:
     result = {
         "filename": filename,
         "format_version": format_version,
+        "metadata": _display_notebook_metadata(notebook.metadata),
         "total_cells": len(cells),
         "code_cells": counts["code"],
         "markdown_cells": counts["markdown"],

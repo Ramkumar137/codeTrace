@@ -295,7 +295,7 @@ def compare_experiments(
     )
     if not original_metrics or not corrected_metrics:
         limitations.append(
-            "One or both completed executions contain no supported labeled metrics."
+            "No supported labeled metrics were captured in one or both execution records."
         )
     if not comparable and original_metrics and corrected_metrics:
         limitations.append(
@@ -441,12 +441,17 @@ def _verify_repair(
         status = (
             "execution_failed"
             if corrected_execution.get("status")
-            in {"failed", "timed_out", "cancelled", "unavailable"}
+            in {"failed", "timed_out", "cancelled"}
             else "inconclusive"
         )
-        limitations.append(
-            "Corrected notebook execution did not complete successfully; runtime verification is incomplete."
-        )
+        if corrected_execution.get("status") == "unavailable":
+            limitations.append(
+                "Corrected notebook execution was unavailable; runtime verification was not performed."
+            )
+        else:
+            limitations.append(
+                "Corrected notebook execution did not complete successfully; runtime verification is incomplete."
+            )
     elif original_execution.get("status") != "completed":
         limitations.append(
             "The original notebook execution did not complete successfully, so the two-run evidence is incomplete."

@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import nbformat
-import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import main
@@ -37,6 +36,19 @@ def test_upload_parses_markdown_and_code_cells():
             ),
         ]
     )
+    notebook = nbformat.reads(content.decode(), as_version=nbformat.NO_CONVERT)
+    notebook.metadata["kernelspec"] = {
+        "name": "python3",
+        "display_name": "Python 3",
+        "language": "python",
+        "sensitive_value": "must not be exposed",
+    }
+    notebook.metadata["language_info"] = {
+        "name": "python",
+        "version": "3.12.0",
+        "sensitive_value": "must not be exposed",
+    }
+    content = nbformat.writes(notebook).encode("utf-8")
 
     response = upload(content)
 
@@ -76,6 +88,14 @@ def test_upload_parses_markdown_and_code_cells():
     assert data["notebook"]["analysis"]["pipeline_graph"]["trace_type"] == (
         "static_inference_not_runtime_trace"
     )
+    assert data["notebook"]["metadata"] == {
+        "kernelspec": {
+            "name": "python3",
+            "display_name": "Python 3",
+            "language": "python",
+        },
+        "language_info": {"name": "python", "version": "3.12.0"},
+    }
     trace = data["notebook"]["analysis"]["pipeline_trace"]
     assert trace["metadata"]["trace_type"] == "static_source_dependency_graph"
     assert trace["metadata"]["node_count"] == 0

@@ -909,3 +909,62 @@ All report and artifact routes require the notebook capability token and verify 
 - Common secret patterns are redacted, but arbitrary secrets embedded in notebook text may not be recognized. Review reports before sharing.
 - Pipeline nodes and edges are included from the existing trace. A server-side graph image export is not implemented.
 - Dataset contents are not embedded in reports; associated CSV files are separately downloadable with the notebook capability token.
+
+---
+
+## Phase 8 – Frontend Integration & Final Validation
+
+**Date completed:** 2026-11-01
+
+### Activities performed
+
+1. Reviewed the existing frontend routes, API calls, notebook parser, execution lifecycle, verification logic, report routes, and existing tests before changing implementation.
+2. Added an allowlisted notebook metadata projection for kernel and language fields and displayed those fields in the existing Overview. Arbitrary notebook metadata is not exposed.
+3. Updated the frontend to render the persisted execution record nested in an HTTP 503 response, so Docker-unavailable experiments show their ID, status, duration, and message.
+4. Reset repair approvals, generated-notebook messaging, and the download control when starting a new notebook workflow, avoiding stale success state.
+5. Corrected verification semantics: a corrected execution marked `unavailable` is now `inconclusive`, not `execution_failed`. Comparison limitations no longer imply unavailable executions were completed.
+6. Kept all existing API routes and dependency declarations; no new runtime or test dependencies were added.
+
+### Files modified
+
+| File | Change |
+|---|---|
+| `README.md` | Document safe metadata display and clarify unavailable-run verification semantics. |
+| `backend/app/models/notebook.py` | Add the projected standard metadata response field. |
+| `backend/app/services/notebook_parser.py` | Extract only the allowlisted kernel/language metadata fields. |
+| `backend/app/services/verification_engine.py` | Preserve unavailable execution as inconclusive and use accurate limitation text. |
+| `frontend/index.html` | Add a kernel/language value to the existing Overview metadata grid. |
+| `frontend/js/app.js` | Render nested unavailable execution responses and clear repair state between notebooks. |
+| `tests/test_notebook_upload.py` | Test standard metadata projection and verify arbitrary fields are not returned. |
+| `tests/test_verification.py` | Test unavailable verification and comparison evidence. |
+| `completion.md` | Record Phase 8 work and actual validation results. |
+
+### Commands executed and actual results
+
+| Command/check | Result |
+|---|---|
+| `.\venv\Scripts\python.exe -m pytest tests\ -q` | **149 passed, 0 failed**; one existing Starlette/AnyIO deprecation warning. |
+| `.\venv\Scripts\python.exe -m pytest tests\test_verification.py tests\test_notebook_upload.py -q` | **36 passed, 0 failed**; one existing Starlette/AnyIO deprecation warning. |
+| `node --check frontend\js\app.js` | Passed. |
+| `.\venv\Scripts\python.exe -m compileall -q backend tests` | Passed. |
+| `git diff --check` | Passed. |
+| Pylance diagnostics on the modified parser, models, verification service, and tests | No diagnostics after removing the unused test import. |
+| Docker daemon check (`docker info --format '{{.ServerVersion}}'`) | Failed: Docker Desktop's configured engine pipe was unavailable. No notebook code ran on the host. |
+
+### Browser workflow validation
+
+The existing frontend was served at `http://127.0.0.1:5500`; an isolated API instance used a fresh temporary SQLite directory on port 8002. A browser-only request rewrite routed the existing UI's configured port-8000 calls to that test API; no source URL or API contract was changed.
+
+- Uploaded the controlled `preprocessing_before_split.ipynb`; kernel/language metadata and the six-operation source graph were displayed, and the expected preprocessing finding appeared.
+- Associated the controlled CSV, approved the supported repair, and generated a separate corrected notebook.
+- Explicitly started original and corrected experiments. Both returned persisted `unavailable` records with distinct IDs because Docker was unavailable; each reported zero executed cells.
+- Loaded both records and verified the finding; the UI showed **Inconclusive**, preserved unavailable execution statuses, and withheld metric deltas.
+- Generated and previewed an evidence report. The HTML preview showed unavailable workflow evidence; PDF, HTML, and JSON actions plus the existing original, corrected, and dataset artifact actions were present.
+- Verified that choosing another notebook clears the prior repair-success message and disables the corrected-notebook action.
+- Existing backend tests cover report exports, artifact authorization, timeout/cleanup handling, upload validation, and safe-pipeline detection. Live Docker execution and live timeout behavior were not validated.
+
+### Known issues and limitations
+
+- Docker execution, container cleanup under a live Docker engine, and notebook success/failure/timeout end-to-end scenarios remain unverified because the Docker daemon was unavailable. The observed unavailable state did not fall back to host execution.
+- An API process already running on port 8000 produced a browser CORS/network failure on the initial execution request. Its CORS preflight and health headers passed direct checks; the complete browser workflow passed against the isolated API on port 8002. The pre-existing process was left untouched, so its transient/runtime-specific cause remains unconfirmed.
+- The project remains a local-development application without account authentication or a distributed durable execution queue. Static-analysis coverage, repair scope, and secret redaction retain the limitations documented above.

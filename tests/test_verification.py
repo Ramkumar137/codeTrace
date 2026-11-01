@@ -196,6 +196,7 @@ def test_partially_corrected_preprocessing_is_reported_as_partial():
         ("failed", "completed", "inconclusive"),
         ("completed", "failed", "execution_failed"),
         ("completed", "timed_out", "execution_failed"),
+        ("completed", "unavailable", "inconclusive"),
     ],
 )
 def test_incomplete_execution_evidence_has_explicit_status(
@@ -212,6 +213,12 @@ def test_incomplete_execution_evidence_has_explicit_status(
     )
 
     assert result["findings"][0]["verification_status"] == expected
+    if corrected_status == "unavailable":
+        assert any(
+            "was unavailable; runtime verification was not performed."
+            in item
+            for item in result["findings"][0]["limitations"]
+        )
 
 
 @pytest.mark.parametrize(
@@ -465,6 +472,27 @@ def test_missing_metrics_are_not_invented():
     )
 
     assert extract_metrics(execution) == []
+
+
+def test_unavailable_experiments_do_not_claim_metrics_from_completed_runs():
+    original = _execution(
+        "original-run", "original-id", "original", status="unavailable", output=""
+    )
+    corrected = _execution(
+        "corrected-run", "corrected-id", "corrected", status="unavailable", output=""
+    )
+    cells = parse_notebook(
+        "metrics.ipynb", _notebook_bytes("value = 1")
+    )["cells"]
+
+    comparison = compare_experiments(original, corrected, cells, cells)
+
+    assert comparison["comparable"] is False
+    assert comparison["metric_comparisons"] == []
+    assert any(
+        "No supported labeled metrics were captured" in reason
+        for reason in comparison["comparability_reasons"]
+    )
 
 
 def test_metric_extractor_supports_only_labeled_metric_names():

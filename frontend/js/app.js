@@ -360,7 +360,7 @@ uploadForm.addEventListener("submit", async (event) => {
     );
     executionResult.classList.add("hidden");
     executionStatusMessage.textContent = "";
-    repairDecisions = new Map();
+    resetRepairWorkflow();
     showNotebookSummary(data.notebook);
     if (!renderInvestigation(data.notebook)) {
       currentNotebook = null;
@@ -388,11 +388,13 @@ document.getElementById("choose-another-notebook").addEventListener("click", () 
     executionPollTimer = null;
   }
   currentNotebook = null;
+  currentNotebookFile = null;
   currentNotebookId = null;
   currentNotebookToken = null;
   correctedNotebookId = null;
   currentExecutionId = null;
   currentVerificationId = null;
+  resetRepairWorkflow();
   verificationOriginalExecution.replaceChildren(new Option("Select an execution", ""));
   verificationCorrectedExecution.replaceChildren(new Option("Select an execution", ""));
   verificationResults.replaceChildren();
@@ -568,7 +570,7 @@ executionForm.addEventListener("submit", async (event) => {
       }
     );
     const data = await response.json();
-    const execution = data?.execution || data;
+    const execution = data?.execution || data?.detail?.execution || data;
     if (execution && typeof execution.execution_id === "string") {
       currentExecutionId = execution.execution_id;
       renderExecution(execution);
@@ -1296,6 +1298,16 @@ function clearUploadMessage() {
   uploadMessage.className = "upload-message hidden";
 }
 
+function resetRepairWorkflow() {
+  repairDecisions = new Map();
+  const button = document.getElementById("download-repaired-notebook");
+  button.disabled = true;
+  button.textContent = "Generate corrected notebook";
+  const message = document.getElementById("repair-download-message");
+  message.textContent = "";
+  message.className = "upload-message hidden";
+}
+
 function isNotebookSuccessResponse(data) {
   const notebook = data && data.notebook;
   if (
@@ -1450,6 +1462,14 @@ function renderInvestigation(notebook) {
   document.getElementById("analysis-summary").textContent = analysis.analysis_summary;
   document.getElementById("overview-filename").textContent = notebook.filename;
   document.getElementById("overview-format-version").textContent = `nbformat ${notebook.format_version}`;
+  const kernel = notebook.metadata?.kernelspec;
+  const language = notebook.metadata?.language_info;
+  const kernelLabel = kernel?.display_name || kernel?.name;
+  const languageLabel = language?.name
+    ? `${language.name}${language.version ? ` ${language.version}` : ""}`
+    : kernel?.language;
+  document.getElementById("overview-kernel-language").textContent =
+    [kernelLabel, languageLabel].filter(Boolean).join(" · ") || "Not specified";
   document.getElementById("overview-total-cells").textContent = String(notebook.total_cells);
   document.getElementById("overview-cell-counts").textContent =
     `${notebook.code_cells} / ${notebook.markdown_cells} / ${notebook.raw_cells}`;

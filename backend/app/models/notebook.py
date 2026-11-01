@@ -16,6 +16,7 @@ class NotebookCell(BaseModel):
 class NotebookSummary(BaseModel):
     filename: str
     format_version: int
+    metadata: dict[str, dict[str, str]]
     total_cells: int
     code_cells: int
     markdown_cells: int
