@@ -1431,6 +1431,79 @@ main {
   font-size: 0.84rem;
 }
 
+.execution-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.execution-card .upload-label {
+  margin: 0;
+}
+
+.execution-card select {
+  width: 100%;
+}
+
+.execution-card select[multiple] {
+  min-height: 100px;
+}
+
+.execution-metadata {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
+  gap: 7px 14px;
+  margin: 14px 0;
+  padding: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.execution-metadata dt {
+  color: var(--text-muted);
+}
+
+.execution-metadata dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.execution-outputs {
+  display: grid;
+  gap: 10px;
+}
+
+.execution-output {
+  min-width: 0;
+  padding: 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.execution-output h4 {
+  margin: 0 0 7px;
+  font-size: 0.86rem;
+}
+
+.execution-output pre, .execution-log {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  color: #1d2939;
+  background: var(--surface);
+  border: 1px solid #e3e8ef;
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .pipeline-trace-layout .graph-viewport {
   height: 640px;
   overflow: hidden;

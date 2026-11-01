@@ -69,6 +69,7 @@
           <a href="#pipeline" data-workspace-route="pipeline">Pipeline Trace</a>
           <a href="#audit" data-workspace-route="audit">Leakage &amp; Evaluation Audit</a>
           <a href="#repairs" data-workspace-route="repairs">Repair Center</a>
+          <a href="#execution" data-workspace-route="execution">Experiments</a>
           <a href="#cells" data-workspace-route="cells">Cell Explorer</a>
           <a href="#evidence" data-workspace-route="evidence">Evidence Report</a>
         </nav>
@@ -85,6 +86,7 @@
             <a class="feature-link" href="#pipeline">Pipeline Trace</a>
             <a class="feature-link" href="#audit">Leakage &amp; Evaluation Audit</a>
             <a class="feature-link" href="#repairs">Repair Center</a>
+            <a class="feature-link" href="#execution">Experiments</a>
             <a class="feature-link" href="#cells">Cell Explorer</a>
             <a class="feature-link" href="#evidence">Evidence Report</a>
           </nav>
@@ -309,6 +311,51 @@
             <p class="upload-message hidden" id="repair-download-message" role="status" aria-live="polite"></p>
           </div>
           <p class="caveat-note">Python syntax and structural validation do not prove semantic correctness. CodeTrace does not execute the notebook or claim experiment verification.</p>
+        </section>
+
+        <section class="workspace-section workspace-page hidden" id="execution-section" data-workspace-page="execution" aria-labelledby="execution-heading">
+          <h2 id="execution-heading">Isolated Experiments</h2>
+          <p class="section-description">Execution starts only when you request it. Original and approved corrected notebooks run in separate, offline Docker containers; only datasets explicitly attached here are provided.</p>
+          <p class="caveat-note">Notebook code is untrusted. Docker and the CodeTrace runner image must be available. CodeTrace never falls back to running notebook code on the API host.</p>
+          <form id="execution-dataset-form" class="workspace-card execution-card">
+            <h3>Associate a dataset</h3>
+            <label class="upload-label" for="execution-dataset-file">CSV dataset</label>
+            <input class="upload-input" id="execution-dataset-file" type="file" accept=".csv,text/csv">
+            <button class="btn" id="execution-dataset-btn" type="submit">Add dataset for execution</button>
+            <p class="upload-message hidden" id="execution-dataset-message" role="status" aria-live="polite"></p>
+            <ul id="execution-datasets" class="compact-list"></ul>
+          </form>
+          <form id="execution-form" class="workspace-card execution-card">
+            <h3>Start an experiment</h3>
+            <label class="upload-label" for="execution-notebook">Notebook version</label>
+            <select id="execution-notebook" class="graph-filter-select">
+              <option value="original">Original notebook</option>
+            </select>
+            <label class="upload-label" for="execution-dataset-select">Associated datasets</label>
+            <select id="execution-dataset-select" class="graph-filter-select" multiple size="4" aria-describedby="execution-dataset-hint"></select>
+            <p class="card-note" id="execution-dataset-hint">Use Ctrl or Command to select only the datasets this experiment needs. An empty selection provides no dataset files.</p>
+            <button class="btn" id="start-execution-btn" type="submit">Start execution</button>
+            <button class="text-button hidden" id="cancel-execution-btn" type="button">Cancel execution</button>
+            <p id="execution-status" class="graph-status" role="status" aria-live="polite"></p>
+            <div id="execution-result" class="hidden">
+              <dl class="execution-metadata">
+                <dt>Execution ID</dt><dd id="execution-id"></dd>
+                <dt>Status</dt><dd id="execution-state"></dd>
+                <dt>Duration</dt><dd id="execution-duration"></dd>
+                <dt>Cells executed</dt><dd id="execution-cells"></dd>
+                <dt>Successful cells</dt><dd id="execution-successful"></dd>
+                <dt>Failed cell</dt><dd id="execution-failed-cell"></dd>
+              </dl>
+              <p id="execution-error" class="empty-state hidden" role="alert"></p>
+              <button class="text-button hidden" id="download-executed-notebook" type="button">Download executed notebook</button>
+              <h3>Cell outputs</h3>
+              <div id="execution-outputs" class="execution-outputs"></div>
+              <details>
+                <summary>Execution logs</summary>
+                <pre id="execution-logs" class="execution-log"></pre>
+              </details>
+            </div>
+          </form>
         </section>
 
         <section class="workspace-section workspace-page hidden" id="cells-section" data-workspace-page="cells">

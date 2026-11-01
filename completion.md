@@ -710,3 +710,69 @@ No dependencies were added, removed, or changed.
 - Test-set contamination, group-aware splits, and train/test CSV overlap are manual-review cases. The engine does not guess identifiers, move tuning code, remove duplicate records, or add imports.
 - Static checks, syntax validation, and nbformat validation do not prove semantic correctness. Notebook code is never executed; no experiment verification is claimed.
 - The API is stateless and keeps no approval record or uploaded notebook. Browser approval/rejection state lasts only for the current page session.
+
+## Phase 5 – Isolated Experiment Execution
+
+**Date completed:** 2026-11-01
+
+### Completed work
+
+- Added SQLite persistence for original notebooks, approved corrected notebooks, explicitly associated CSV datasets, execution status/metadata, cell outputs/errors, logs, and executed notebook artifacts.
+- Uploads now return a notebook ID and a random capability token; only its hash is stored. Execution, dataset association/listing, repair persistence, result retrieval, cancellation, and artifact download require the token.
+- Corrected notebooks are persisted separately only when generated from explicitly approved repair IDs. Generation does not start execution.
+- Added asynchronous execution orchestration with a bounded in-process queue and two-container concurrency cap. Original and corrected notebook executions receive separate execution IDs and fresh containers.
+- Added a Docker-only runner using a prebuilt Python/nbclient image. The container runs non-root, without networking, with a read-only root filesystem, bounded resources, and writable tmpfs only. Only the selected notebook and explicitly associated datasets are mounted read-only. The runner keeps the container alive briefly so the host can read bounded result/artifact streams from tmpfs before stopping and removing the container. No host code-execution fallback exists.
+- Added bounded cell outputs and runner logs, Python/package metadata, timeout and failure capture, cancellation, and container/temp-directory cleanup.
+- Added an Experiments page to select original/corrected notebooks, associate datasets, explicitly start runs, monitor status, inspect output/errors, cancel, and download an artifact.
+- Documented the execution API, Docker image build, storage/token model, limits, and deployment/security caveats in README.
+
+### Files changed
+
+| Path | Change |
+|---|---|
+| `backend/app/main.py` | Persists uploads/corrected notebooks, requires capability tokens, and adds dataset/execution APIs. |
+| `backend/app/models/notebook.py` | Includes notebook ID and access token in upload response. |
+| `backend/app/models/execution.py` | Adds execution request and status response models. |
+| `backend/app/services/execution_store.py` | Adds SQLite storage for notebook versions, datasets, and experiment results. |
+| `backend/app/services/execution_manager.py` | Adds asynchronous run lifecycle, queue/concurrency limits, and cancellation. |
+| `backend/app/services/docker_runner.py` | Adds Docker-only execution, resource isolation, bounded log/artifact streams, timeout handling, and cleanup. |
+| `backend/execution/Dockerfile` | Defines the pre-installed non-root Python runtime with pinned nbclient/ipykernel/nbformat dependencies. |
+| `backend/execution/runner.py` | Validates and executes notebooks inside the container, captures cell output after execution, and briefly holds the container for artifact collection. |
+| `frontend/index.html` | Adds the Experiments workspace to the existing UI. |
+| `frontend/js/app.js` | Adds explicit execution, dataset association, polling, result inspection, cancellation, and artifact download. |
+| `frontend/css/style.css` | Styles the execution section in the existing light theme. |
+| `tests/test_execution.py` | Adds mocked runner, API authorization, persistence, independent notebook, timeout, output, dataset, Docker configuration, and cleanup tests. |
+| `README.md` | Documents Phase 5 architecture, API, setup, security limits, and workflow. |
+| `completion.md` | Records this phase and its actual verification results. |
+
+### Dependencies
+
+No host dependencies were added or changed in `requirements.txt`. The Docker image pins `nbclient==0.10.2`, `ipykernel==6.29.5`, and `nbformat==5.10.4`. Notebook-declared packages are not installed automatically.
+
+### Commands executed and actual results
+
+| Command/check | Result |
+|---|---|
+| `.\venv\Scripts\python.exe -m pytest tests\ -q` | **118 passed, 0 failed**; one existing Starlette/AnyIO deprecation warning. |
+| `.\venv\Scripts\python.exe -m pytest tests\test_execution.py -q` | **19 passed, 0 failed**; one existing Starlette/AnyIO deprecation warning. |
+| `node --check frontend\js\app.js` | Passed. |
+| `git diff --check` | Passed. |
+| `.\venv\Scripts\python.exe -m compileall -q backend\app\services\docker_runner.py backend\execution\runner.py tests\test_execution.py` | Passed. |
+| `docker build --tag codetrace-notebook-runner:latest --file backend\execution\Dockerfile backend\execution` | Passed; runner image built successfully. |
+| `docker image inspect codetrace-notebook-runner:latest --format '{{.Id}} {{.Config.User}}'` | Passed; image configured as UID/GID `10001:10001`. |
+| Real Docker run: safe original and corrected notebook fixtures | Both completed in separate containers with distinct execution IDs, captured cell output, Python `3.12.8` metadata, and executed notebook artifacts. |
+| Real Docker run: intentional `ValueError` in a safe fixture | Captured `failed` status, failed cell 1, and `ValueError` details. |
+| Real Docker run: explicitly associated CSV and `os.geteuid()` | Completed; notebook read only the mounted fixture and reported effective UID `10001`. |
+| Real Docker run: `time.sleep(20)` with a two-second execution limit | Returned `timed_out` with a clear time-limit message; container was cleaned up. |
+| Pylance diagnostics | No errors in the host runner or API runner; the container-only runner reports unresolved host import `nbclient`, which is intentionally installed in the Docker image rather than host requirements. |
+| Container cleanup after real runs | Passed; no `codetrace-integration*` containers remained. |
+
+Mocked tests cover unavailable status, container isolation settings, timeout/cancellation, persistence, and cleanup. Real Docker integration confirmed successful output/artifact retrieval, cell exception capture, dataset mounting, non-root execution, and Windows Docker Desktop bind mounts. Docker was available, so the unavailable-image path was validated by mocked tests only. Execution remains Docker-only and never falls back to the host.
+
+### Operational limitations
+
+- Run one FastAPI worker: the background task queue is in-process; SQLite records persist but queued work is not a distributed durable queue.
+- Capability tokens are not an account/login system; the browser keeps them only in memory. The SQLite directory and tokens must be protected.
+- Docker isolation is a defense-in-depth boundary, not a guarantee against container-runtime or kernel vulnerabilities. This local setup is not hardened for multi-tenant deployment.
+- The execution runner has no network and does not install notebook requirements automatically; packages must be deliberately baked into a locally built runner image.
+- Phase 5 captures execution only. It does not decide whether a repair succeeded or compare original/corrected metrics.

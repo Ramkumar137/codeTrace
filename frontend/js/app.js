@@ -25,6 +25,18 @@ const datasetUploadBtn = document.getElementById("dataset-upload-btn");
 const datasetUploadMessage = document.getElementById("dataset-upload-message");
 const datasetResults = document.getElementById("dataset-results");
 const datasetColumns = document.getElementById("dataset-columns");
+const executionDatasetForm = document.getElementById("execution-dataset-form");
+const executionDatasetFile = document.getElementById("execution-dataset-file");
+const executionDatasetMessage = document.getElementById("execution-dataset-message");
+const executionDatasetList = document.getElementById("execution-datasets");
+const executionDatasetSelect = document.getElementById("execution-dataset-select");
+const executionNotebookSelect = document.getElementById("execution-notebook");
+const executionForm = document.getElementById("execution-form");
+const startExecutionButton = document.getElementById("start-execution-btn");
+const cancelExecutionButton = document.getElementById("cancel-execution-btn");
+const executionStatusMessage = document.getElementById("execution-status");
+const executionResult = document.getElementById("execution-result");
+const executionOutputs = document.getElementById("execution-outputs");
 const overlapForm = document.getElementById("overlap-form");
 const overlapTrainFile = document.getElementById("overlap-train-file");
 const overlapTestFile = document.getElementById("overlap-test-file");
@@ -33,6 +45,11 @@ const overlapMessage = document.getElementById("overlap-message");
 const overlapResults = document.getElementById("overlap-results");
 let currentNotebook = null;
 let currentNotebookFile = null;
+let currentNotebookId = null;
+let currentNotebookToken = null;
+let correctedNotebookId = null;
+let currentExecutionId = null;
+let executionPollTimer = null;
 let currentPipelineTrace = null;
 let repairDecisions = new Map();
 let pipelineGraphLayout = null;
@@ -197,7 +214,7 @@ function showRoute() {
   if (workspaceRoute === "inspect") {
     workspaceRoute = currentNotebook ? "summary" : "upload";
   }
-  const validWorkspaceRoutes = ["summary", "overview", "pipeline", "audit", "repairs", "cells", "evidence"];
+  const validWorkspaceRoutes = ["summary", "overview", "pipeline", "audit", "repairs", "execution", "cells", "evidence"];
   if (!validWorkspaceRoutes.includes(workspaceRoute)) {
     workspaceRoute = currentNotebook ? "summary" : "upload";
   }
@@ -297,18 +314,35 @@ uploadForm.addEventListener("submit", async (event) => {
       return;
     }
 
-    if (!isNotebookSuccessResponse(data)) {
-      showUploadMessage("The server response did not contain a valid notebook summary.", "error");
+    if (
+      !isNotebookSuccessResponse(data) ||
+      typeof data.notebook_id !== "string" ||
+      typeof data.access_token !== "string"
+    ) {
+      showUploadMessage("The server response did not contain a valid notebook summary or access token.", "error");
       return;
     }
 
     currentNotebook = data.notebook;
     currentNotebookFile = selectedFile;
+    currentNotebookId = data.notebook_id;
+    currentNotebookToken = data.access_token;
+    correctedNotebookId = null;
+    currentExecutionId = null;
+    executionDatasetSelect.replaceChildren();
+    executionDatasetList.replaceChildren();
+    executionNotebookSelect.replaceChildren(
+      new Option("Original notebook", "original")
+    );
+    executionResult.classList.add("hidden");
+    executionStatusMessage.textContent = "";
     repairDecisions = new Map();
     showNotebookSummary(data.notebook);
     if (!renderInvestigation(data.notebook)) {
       currentNotebook = null;
       currentNotebookFile = null;
+      currentNotebookId = null;
+      currentNotebookToken = null;
       repairDecisions = new Map();
       showUploadMessage("Notebook parsed, but the analysis response was incomplete.", "error");
       return;
@@ -325,7 +359,24 @@ uploadForm.addEventListener("submit", async (event) => {
 });
 
 document.getElementById("choose-another-notebook").addEventListener("click", () => {
+  if (executionPollTimer !== null) {
+    window.clearTimeout(executionPollTimer);
+    executionPollTimer = null;
+  }
   currentNotebook = null;
+  currentNotebookId = null;
+  currentNotebookToken = null;
+  correctedNotebookId = null;
+  currentExecutionId = null;
+  executionDatasetList.replaceChildren();
+  executionDatasetSelect.replaceChildren();
+  executionDatasetForm.reset();
+  showExecutionDatasetMessage("", "hidden");
+  executionNotebookSelect.replaceChildren(
+    new Option("Original notebook", "original")
+  );
+  executionResult.classList.add("hidden");
+  executionStatusMessage.textContent = "";
   datasetForm.reset();
   resetDatasetAnalysis();
   uploadForm.reset();
@@ -398,6 +449,316 @@ datasetForm.addEventListener("submit", async (event) => {
     datasetUploadBtn.textContent = "Analyze CSV";
   }
 });
+
+executionDatasetForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!currentNotebookId || !currentNotebookToken) {
+    showExecutionDatasetMessage("Upload a notebook before attaching a dataset.", "error");
+    return;
+  }
+  const file = executionDatasetFile.files[0];
+  if (!file) {
+    showExecutionDatasetMessage("Choose a CSV dataset to attach.", "error");
+    executionDatasetFile.focus();
+    return;
+  }
+  const button = document.getElementById("execution-dataset-btn");
+  button.disabled = true;
+  button.textContent = "Adding…";
+  showExecutionDatasetMessage("Validating and associating this CSV…", "loading");
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/datasets`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${currentNotebookToken}` },
+        body: formData
+      }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "The dataset could not be attached.");
+    }
+    if (!data.dataset || typeof data.dataset.dataset_id !== "string") {
+      throw new Error("The server did not return a valid dataset reference.");
+    }
+    const option = new Option(data.dataset.filename, data.dataset.dataset_id);
+    executionDatasetSelect.add(option);
+    const item = document.createElement("li");
+    item.textContent = `${data.dataset.filename} · available only when selected for an experiment`;
+    executionDatasetList.appendChild(item);
+    executionDatasetFile.value = "";
+    showExecutionDatasetMessage("Dataset securely associated with this notebook.", "success");
+  } catch (error) {
+    showExecutionDatasetMessage(
+      error instanceof Error ? error.message : "The dataset could not be attached.",
+      "error"
+    );
+  } finally {
+    button.disabled = false;
+    button.textContent = "Add dataset for execution";
+  }
+});
+
+executionForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!currentNotebookId || !currentNotebookToken) {
+    showExecutionStatus("Upload a notebook before starting an experiment.", "error");
+    return;
+  }
+  const notebookId = executionNotebookSelect.value === "corrected"
+    ? correctedNotebookId
+    : currentNotebookId;
+  if (!notebookId) {
+    showExecutionStatus("Generate an approved corrected notebook before selecting it.", "error");
+    return;
+  }
+
+  startExecutionButton.disabled = true;
+  startExecutionButton.textContent = "Starting…";
+  executionResult.classList.add("hidden");
+  showExecutionStatus("Requesting an isolated Docker execution…", "loading");
+  const datasetIds = [...executionDatasetSelect.selectedOptions].map((option) => option.value);
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(notebookId)}/executions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${currentNotebookToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ dataset_ids: datasetIds })
+      }
+    );
+    const data = await response.json();
+    const execution = data?.execution || data;
+    if (execution && typeof execution.execution_id === "string") {
+      currentExecutionId = execution.execution_id;
+      renderExecution(execution);
+    }
+    if (!response.ok) {
+      const message = data?.detail?.message || "The execution could not be started.";
+      if (execution && execution.status === "unavailable") {
+        showExecutionStatus(message, "error");
+        return;
+      }
+      throw new Error(message);
+    }
+    if (!execution || typeof execution.execution_id !== "string") {
+      throw new Error("The server did not return a valid execution record.");
+    }
+    showExecutionStatus(`Execution ${execution.status}.`, "loading");
+    scheduleExecutionPoll();
+  } catch (error) {
+    currentExecutionId = null;
+    showExecutionStatus(
+      error instanceof Error ? error.message : "The execution could not be started.",
+      "error"
+    );
+    startExecutionButton.disabled = false;
+    startExecutionButton.textContent = "Start execution";
+  }
+});
+
+cancelExecutionButton.addEventListener("click", async () => {
+  if (!currentExecutionId || !currentNotebookToken) {
+    return;
+  }
+  cancelExecutionButton.disabled = true;
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/executions/${encodeURIComponent(currentExecutionId)}/cancel`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${currentNotebookToken}` }
+      }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "The execution could not be cancelled.");
+    }
+    renderExecution(data);
+    showExecutionStatus(
+      data.status === "cancelled"
+        ? "Execution cancelled."
+        : `Cancellation ended with execution status ${executionStatusLabel(data.status).toLowerCase()}.`,
+      data.status === "cancelled" ? "success" : "error"
+    );
+    stopExecutionPolling();
+  } catch (error) {
+    showExecutionStatus(
+      error instanceof Error ? error.message : "The execution could not be cancelled.",
+      "error"
+    );
+  } finally {
+    cancelExecutionButton.disabled = false;
+  }
+});
+
+document.getElementById("download-executed-notebook").addEventListener("click", async () => {
+  if (!currentExecutionId || !currentNotebookToken) {
+    return;
+  }
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/executions/${encodeURIComponent(currentExecutionId)}/notebook`,
+      { headers: { Authorization: `Bearer ${currentNotebookToken}` } }
+    );
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data?.detail?.message || "The executed notebook is not available.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${currentNotebook.filename.replace(/\.ipynb$/i, "")}-executed.ipynb`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    showExecutionStatus(
+      error instanceof Error ? error.message : "The executed notebook is not available.",
+      "error"
+    );
+  }
+});
+
+function showExecutionDatasetMessage(message, state) {
+  executionDatasetMessage.textContent = message;
+  executionDatasetMessage.className = `upload-message ${state}`;
+}
+
+function showExecutionStatus(message, state) {
+  executionStatusMessage.textContent = message;
+  executionStatusMessage.className = `graph-status ${state}`;
+}
+
+function stopExecutionPolling() {
+  if (executionPollTimer !== null) {
+    window.clearTimeout(executionPollTimer);
+    executionPollTimer = null;
+  }
+  startExecutionButton.disabled = false;
+  startExecutionButton.textContent = "Start execution";
+  cancelExecutionButton.classList.add("hidden");
+}
+
+function scheduleExecutionPoll() {
+  if (executionPollTimer !== null) {
+    window.clearTimeout(executionPollTimer);
+  }
+  executionPollTimer = window.setTimeout(pollExecution, 1500);
+}
+
+async function pollExecution() {
+  if (!currentExecutionId || !currentNotebookToken) {
+    stopExecutionPolling();
+    return;
+  }
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/executions/${encodeURIComponent(currentExecutionId)}`,
+      {
+        headers: { Authorization: `Bearer ${currentNotebookToken}` },
+        cache: "no-store"
+      }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "Execution status could not be loaded.");
+    }
+    renderExecution(data);
+    if (["queued", "running"].includes(data.status)) {
+      showExecutionStatus(`Execution ${data.status}.`, "loading");
+      scheduleExecutionPoll();
+    } else {
+      const label = executionStatusLabel(data.status);
+      showExecutionStatus(`Execution ${label.toLowerCase()}.`, data.status === "completed" ? "success" : "error");
+      stopExecutionPolling();
+    }
+  } catch (error) {
+    showExecutionStatus(
+      error instanceof Error ? error.message : "Execution status could not be loaded.",
+      "error"
+    );
+    stopExecutionPolling();
+  }
+}
+
+function executionStatusLabel(status) {
+  return ({
+    queued: "Queued",
+    running: "Running",
+    completed: "Completed",
+    failed: "Failed",
+    timed_out: "Timed out",
+    cancelled: "Cancelled",
+    unavailable: "Unavailable"
+  })[status] || "Unknown";
+}
+
+function renderExecution(execution) {
+  executionResult.classList.remove("hidden");
+  document.getElementById("execution-id").textContent = execution.execution_id;
+  document.getElementById("execution-state").textContent = executionStatusLabel(execution.status);
+  document.getElementById("execution-duration").textContent =
+    typeof execution.duration_seconds === "number"
+      ? `${execution.duration_seconds.toFixed(2)} seconds`
+      : "Not complete";
+  document.getElementById("execution-cells").textContent = String(execution.executed_cell_count ?? 0);
+  document.getElementById("execution-successful").textContent =
+    String(execution.successful_cell_count ?? 0);
+  document.getElementById("execution-failed-cell").textContent =
+    execution.failed_cell_number === null || execution.failed_cell_number === undefined
+      ? "None"
+      : `Cell ${execution.failed_cell_number}`;
+  const errorElement = document.getElementById("execution-error");
+  if (execution.error_details) {
+    errorElement.textContent = [
+      execution.error_details.ename,
+      execution.error_details.evalue,
+      execution.error_details.traceback,
+      execution.error_details.message
+    ].filter(Boolean).join("\n");
+    errorElement.classList.remove("hidden");
+  } else {
+    errorElement.textContent = "";
+    errorElement.classList.add("hidden");
+  }
+  const downloadButton = document.getElementById("download-executed-notebook");
+  downloadButton.classList.toggle(
+    "hidden",
+    !execution.artifact_available
+  );
+  cancelExecutionButton.classList.toggle(
+    "hidden",
+    !["queued", "running"].includes(execution.status)
+  );
+  startExecutionButton.disabled = ["queued", "running"].includes(execution.status);
+  startExecutionButton.textContent = startExecutionButton.disabled
+    ? "Execution in progress"
+    : "Start execution";
+  executionOutputs.replaceChildren();
+  (execution.outputs || []).forEach((cell) => {
+    const article = document.createElement("article");
+    article.className = "execution-output";
+    const heading = document.createElement("h4");
+    heading.textContent = `Cell ${cell.cell_number}`;
+    article.appendChild(heading);
+    (cell.outputs || []).forEach((output) => {
+      const pre = document.createElement("pre");
+      pre.textContent = output.text || `[${output.output_type || "output"}]`;
+      article.appendChild(pre);
+    });
+    executionOutputs.appendChild(article);
+  });
+  document.getElementById("execution-logs").textContent = execution.logs || "No runner logs.";
+}
 
 overlapForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -2065,7 +2426,7 @@ document.getElementById("download-repaired-notebook").addEventListener("click", 
   const approvedIds = [...repairDecisions.entries()]
     .filter(([, decision]) => decision === "approved")
     .map(([repairId]) => repairId);
-  if (!currentNotebookFile || !approvedIds.length) {
+  if (!currentNotebookFile || !currentNotebookId || !currentNotebookToken || !approvedIds.length) {
     message.textContent = "Approve at least one repair before generating a notebook.";
     message.className = "upload-message error";
     return;
@@ -2080,8 +2441,10 @@ document.getElementById("download-repaired-notebook").addEventListener("click", 
     const formData = new FormData();
     formData.append("file", currentNotebookFile);
     formData.append("repair_ids", JSON.stringify(approvedIds));
+    formData.append("notebook_id", currentNotebookId);
     const response = await fetch(`${API_BASE_URL}/api/notebooks/repairs/generate`, {
       method: "POST",
+      headers: { Authorization: `Bearer ${currentNotebookToken}` },
       body: formData
     });
     if (!response.ok) {
@@ -2096,6 +2459,19 @@ document.getElementById("download-repaired-notebook").addEventListener("click", 
     }
 
     const blob = await response.blob();
+    const generatedNotebookId = response.headers.get("X-CodeTrace-Notebook-ID");
+    if (!generatedNotebookId) {
+      throw new Error("The generated notebook could not be associated with this experiment.");
+    }
+    correctedNotebookId = generatedNotebookId;
+    let correctedOption = executionNotebookSelect.querySelector(
+      'option[value="corrected"]'
+    );
+    if (!correctedOption) {
+      correctedOption = new Option("", "corrected");
+      executionNotebookSelect.add(correctedOption);
+    }
+    correctedOption.textContent = "Approved corrected notebook";
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -2104,7 +2480,7 @@ document.getElementById("download-repaired-notebook").addEventListener("click", 
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    message.textContent = "Corrected notebook downloaded. The uploaded original was not changed.";
+    message.textContent = "Approved corrected notebook generated and downloaded. Starting its experiment still requires an explicit action in Experiments.";
     message.className = "upload-message success";
   } catch (error) {
     message.textContent = error instanceof Error ? error.message : "The corrected notebook could not be generated.";

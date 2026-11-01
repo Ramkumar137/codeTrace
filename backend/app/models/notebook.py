@@ -26,4 +26,6 @@ class NotebookSummary(BaseModel):
 
 class NotebookUploadResponse(BaseModel):
     status: Literal["success"]
+    notebook_id: str
+    access_token: str
     notebook: NotebookSummary
