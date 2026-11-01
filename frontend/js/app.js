@@ -16,6 +16,7 @@ const summaryBody = document.getElementById("notebook-summary-body");
 const inspectView = document.getElementById("inspect-view");
 const aboutView = document.getElementById("about-view");
 const workflowView = document.getElementById("workflow-view");
+const mainView = document.querySelector("main");
 const workspace = document.getElementById("investigation-workspace");
 const cellSelector = document.getElementById("cell-selector");
 const cellMeta = document.getElementById("cell-meta");
@@ -239,7 +240,9 @@ function showRoute() {
   const showWorkspace = !showProductInfo && hasNotebook;
   const showUpload = !showProductInfo && !hasNotebook;
 
+  mainView.classList.toggle("workspace-mode", showWorkspace);
   inspectView.classList.toggle("hidden", showProductInfo);
+  inspectView.classList.toggle("workspace-open", showWorkspace);
   aboutView.classList.toggle("hidden", !aboutIsVisible);
   workflowView.classList.toggle("hidden", !workflowIsVisible);
   uploadStage.classList.toggle("hidden", !showUpload);

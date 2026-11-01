@@ -63,6 +63,8 @@ button:focus-visible, input:focus-visible {
 }
 
 .header-inner {
+  width: calc(100% - 64px);
+  max-width: none;
   min-height: 68px;
   display: flex;
   align-items: center;
@@ -73,6 +75,7 @@ button:focus-visible, input:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  margin-left: 8px;
   color: var(--text);
   font-size: 1.1rem;
   font-weight: 650;
@@ -131,6 +134,15 @@ button:focus-visible, input:focus-visible {
 main {
   flex: 1;
   padding-block: clamp(38px, 7vw, 76px) 64px;
+}
+
+main.workspace-mode {
+  padding-block: 18px 32px;
+}
+
+.container.workspace-open {
+  width: calc(100% - 32px);
+  max-width: none;
 }
 
 .page-intro {
@@ -309,13 +321,23 @@ main {
 }
 
 .investigation {
-  margin-top: 34px;
+  display: grid;
+  grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+  margin-top: 0;
 }
 
 .workspace-nav {
-  flex-wrap: wrap;
+  position: sticky;
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 3px;
-  margin-bottom: 16px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  margin: 0;
   padding: 8px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -323,6 +345,7 @@ main {
 }
 
 .workspace-nav a {
+  display: block;
   font-size: 0.83rem;
 }
 
@@ -1289,7 +1312,12 @@ main {
     width: min(100% - 28px, 1040px);
   }
 
+  .container.workspace-open {
+    width: calc(100% - 24px);
+  }
+
   .header-inner {
+    width: calc(100% - 40px);
     min-height: 62px;
   }
 
@@ -1320,14 +1348,21 @@ main {
     padding-inline: 10px;
   }
 
-  .workspace-nav {
-    position: static;
-    align-items: flex-start;
-  }
-
   .summary-footer {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+@media (max-width: 640px) {
+  .investigation {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .workspace-nav {
+    position: static;
+    max-height: none;
   }
 }
 
