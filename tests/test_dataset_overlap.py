@@ -15,6 +15,7 @@ def compare(
     *,
     identifier_column=None,
     group_column=None,
+    evaluation_objective=None,
     train_filename="train.csv",
     test_filename="test.csv",
 ):
@@ -23,6 +24,8 @@ def compare(
         data["identifier_column"] = identifier_column
     if group_column is not None:
         data["group_column"] = group_column
+    if evaluation_objective is not None:
+        data["evaluation_objective"] = evaluation_objective
     return client.post(
         OVERLAP_URL,
         files={
@@ -71,6 +74,73 @@ def test_configured_group_overlap_is_reported():
     finding = response.json()["overlap"]["findings"][0]
     assert finding["id"] == "train_test_group_overlap"
     assert finding["severity"] == "high"
+
+
+def test_unseen_group_objective_explains_group_overlap_conflict():
+    response = compare(
+        b"group,feature\nward-a,alpha\nward-b,beta\n",
+        b"group,feature\nward-a,gamma\nward-c,delta\n",
+        group_column="group",
+        evaluation_objective="unseen_groups",
+    )
+
+    result = response.json()["overlap"]
+    finding = next(
+        item for item in result["findings"] if item["id"] == "train_test_group_overlap"
+    )
+    assert result["evaluation_objective"] == "unseen_groups"
+    assert result["objective_review"]["status"] == "unseen_group_holdout"
+    assert finding["severity"] == "high"
+    assert "conflict" in finding["explanation"]
+    assert "group-aware split" in finding["recommendation"]
+    assert "ward-a" not in response.text
+
+
+def test_future_known_group_objective_does_not_call_group_overlap_a_defect():
+    response = compare(
+        b"group,feature\nward-a,alpha\nward-b,beta\n",
+        b"group,feature\nward-a,gamma\nward-c,delta\n",
+        group_column="group",
+        evaluation_objective="future_known_groups",
+    )
+
+    result = response.json()["overlap"]
+    finding = next(
+        item for item in result["findings"] if item["id"] == "train_test_group_overlap"
+    )
+    assert finding["severity"] == "informational"
+    assert finding["classification"] == "informational_review"
+    assert finding["status"] == "contextual"
+    assert result["objective_review"]["status"] == "temporal_validation_required"
+    assert "chronological ordering" in result["objective_review"]["message"]
+
+
+def test_independent_rows_objective_flags_dependence_as_context():
+    response = compare(
+        b"group,feature\nward-a,alpha\nward-b,beta\n",
+        b"group,feature\nward-a,gamma\nward-c,delta\n",
+        group_column="group",
+        evaluation_objective="independent_rows",
+    )
+
+    finding = next(
+        item
+        for item in response.json()["overlap"]["findings"]
+        if item["id"] == "train_test_group_overlap"
+    )
+    assert finding["severity"] == "medium"
+    assert "statistically dependent" in finding["recommendation"]
+
+
+def test_unsupported_evaluation_objective_is_rejected():
+    response = compare(
+        b"group,feature\nward-a,alpha\n",
+        b"group,feature\nward-b,beta\n",
+        evaluation_objective="guess",
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_evaluation_objective"
 
 
 def test_safe_disjoint_splits_return_no_findings():

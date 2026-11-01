@@ -35,7 +35,7 @@ The current implementation validates and parses notebooks, identifies a defined 
 | Source-linked operation graph with inferred variable links | Implemented; partial static-analysis coverage |
 | Interactive pipeline dependency map with node/edge inspection and filters | Implemented; static evidence only |
 | Evidence-linked checks for preprocessing, target, test-set, and evaluation risks | Implemented; bounded static rules |
-| Explicit train/test CSV overlap checks | Implemented; caller supplies both splits and optional identifier/group columns |
+| Explicit train/test CSV overlap checks | Implemented; caller supplies both splits, optional identifier/group columns, and the evaluation objective |
 | Deterministic repair proposals and separately generated corrected notebooks | Implemented for narrow, validated preprocessing and literal target-column patterns |
 | User approval/rejection before repair generation | Implemented in the Repair Center; decisions remain in the current browser session |
 | Explicit original/corrected notebook experiments | Implemented; each run has a separate execution ID and Docker container |
@@ -44,6 +44,7 @@ The current implementation validates and parses notebooks, identifies a defined 
 | Repair verification using stored approved repairs and original/corrected execution records | Implemented with per-finding evidence, statuses, and limitations; does not infer success from execution alone |
 | Original/corrected metric comparison | Implemented for explicitly labeled output metrics when recorded dataset, model, split, seed, runtime, and relevant package settings match |
 | Cell Explorer and persisted HTML, PDF, and JSON evidence reports | Implemented from stored CodeTrace records; partial workflows are labeled |
+| Objective-aware interpretation of group overlap | Implemented for unseen-group, known-group future-prediction, independent-row, and unspecified objectives; does not rewrite notebook split code |
 | Comprehensive or runtime-verified leakage/data-flow detection | Not implemented |
 
 ---
@@ -112,9 +113,9 @@ This is bounded, descriptive profiling rather than a full data-quality or ML-tar
 
 ### Explicit train/test overlap checks
 
-The Leakage & Evaluation Audit page can submit two separately selected CSV files to `POST /api/datasets/overlap`. The endpoint accepts multipart fields `train_file`, `test_file`, and optional `identifier_column` and `group_column`. It checks exact full-row matches when both files have the same column names (column order may differ), and compares only configured non-empty identifier/group values across the files. A missing configured column is an explicit validation error. If schemas differ, full-row comparison is marked skipped rather than reported as a successful check; configured identifiers can still be checked when present in both files.
+The Leakage & Evaluation Audit page can submit two separately selected CSV files to `POST /api/datasets/overlap`. The endpoint accepts multipart fields `train_file`, `test_file`, optional `identifier_column` and `group_column`, and an `evaluation_objective`: `unseen_groups`, `future_known_groups`, `independent_rows`, or `unspecified` (the default). It checks exact full-row matches when both files have the same column names (column order may differ), and compares only configured non-empty identifier/group values across the files. A missing configured column or unsupported objective is an explicit validation error. If schemas differ, full-row comparison is marked skipped rather than reported as a successful check; configured identifiers can still be checked when present in both files.
 
-The response contains overlap counts, filenames, check status, caveats, and findings, but never overlapping values. Exact duplicate feature rows are not treated as proof of same-person leakage. Identifier/group findings depend on the caller's column semantics. Both files are bounded by the existing per-file upload limit, processed in memory, and discarded after the request. This check is not automatically joined to notebook graph nodes because the split files are supplied separately.
+The response contains overlap counts, filenames, check status, objective-specific interpretation, caveats, and findings, but never overlapping values. For `unseen_groups`, shared groups are flagged as conflicting with the stated holdout goal. For `future_known_groups`, group overlap is informational rather than treated as a defect; chronology and post-cutoff feature leakage still require separate review. For `independent_rows`, the user is prompted to assess within-group dependence. If the objective is unspecified, the result remains a caution rather than assuming a split policy. Exact duplicate feature rows are not treated as proof of same-person leakage. Identifier/group semantics are supplied by the caller. Both files are bounded by the existing per-file upload limit, processed in memory, and discarded after the request. This check is not automatically joined to notebook graph nodes or used to rewrite a notebook split because the uploaded CSVs are not tied to the notebook's split statement.
 
 ### Finding evidence and interpretation
 

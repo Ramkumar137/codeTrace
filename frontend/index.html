@@ -286,6 +286,13 @@
                 <input id="overlap-test-file" name="test_file" type="file" accept=".csv,text/csv" required>
               </div>
               <div class="overlap-identifier-fields">
+                <label for="overlap-objective">Evaluation objective</label>
+                <select id="overlap-objective" name="evaluation_objective">
+                  <option value="unspecified">Not specified</option>
+                  <option value="unseen_groups">Generalize to unseen entities/groups</option>
+                  <option value="future_known_groups">Predict future records for known entities/groups</option>
+                  <option value="independent_rows">Generalize to independently sampled rows</option>
+                </select>
                 <label for="overlap-identifier-column">Identifier column (optional)</label>
                 <input id="overlap-identifier-column" name="identifier_column" type="text" autocomplete="off" placeholder="e.g. patient_id">
                 <label for="overlap-group-column">Group column (optional)</label>
@@ -409,6 +416,56 @@
       </section>
     </div>
 
+    <section class="workflow-view hidden" id="workflow-view" aria-labelledby="workflow-title">
+      <div class="container workflow-content">
+        <h1 class="about-title" id="workflow-title">How CodeTrace works</h1>
+        <p class="about-lead">CodeTrace takes a notebook from source inspection to evidence-backed review. You stay in control: analysis does not execute code, repairs require your approval, and experiments run only when you explicitly start them.</p>
+
+        <section class="workflow-section" aria-labelledby="workflow-steps-heading">
+          <h2 id="workflow-steps-heading">The complete project workflow</h2>
+          <ol class="workflow-diagram">
+            <li class="workflow-node">
+              <span class="workflow-number">01</span>
+              <div><h3>Upload a notebook</h3><p>CodeTrace validates the Jupyter notebook and shows its cells and safe, whitelisted metadata. Upload does not execute code or open notebook-referenced files.</p></div>
+            </li>
+            <li class="workflow-node">
+              <span class="workflow-number">02</span>
+              <div><h3>Trace the ML workflow</h3><p>Static Python analysis recognizes supported data, preprocessing, split, model, prediction, and evaluation operations, then links operations using source-visible variable references.</p></div>
+            </li>
+            <li class="workflow-node">
+              <span class="workflow-number">03</span>
+              <div><h3>Review evidence and dataset context</h3><p>Inspect potential risks with cell and line evidence, related variables, confidence, and limitations. Optionally profile an explicitly selected CSV or compare train/test CSVs for row, identifier, or group overlap in light of your evaluation objective.</p></div>
+            </li>
+            <li class="workflow-node">
+              <span class="workflow-number">04</span>
+              <div><h3>Approve a supported repair</h3><p>Review the proposed source changes and approve or reject them. Supported repairs are deterministic and narrow; the corrected notebook is separate, and the original remains unchanged.</p></div>
+            </li>
+            <li class="workflow-node">
+              <span class="workflow-number">05</span>
+              <div><h3>Run experiments explicitly</h3><p>When Docker and the runner are available, start separate offline, resource-limited runs of the original and corrected versions. Only datasets you attach are provided; CodeTrace never falls back to executing notebooks on the API host.</p></div>
+            </li>
+            <li class="workflow-node">
+              <span class="workflow-number">06</span>
+              <div><h3>Verify and compare</h3><p>CodeTrace checks the stored repair against both notebook versions and execution records. It compares labeled metrics only when the recorded experiment settings are sufficiently comparable; verification is scoped to the repair and is not proof of overall correctness.</p></div>
+            </li>
+            <li class="workflow-node">
+              <span class="workflow-number">07</span>
+              <div><h3>Generate an evidence report</h3><p>Create HTML, PDF, and JSON report artifacts from saved analysis and experiment records. Missing or inconclusive evidence is labeled rather than presented as a successful result.</p></div>
+            </li>
+          </ol>
+        </section>
+
+        <section class="workflow-section workflow-novelty" aria-labelledby="workflow-novelty-heading">
+          <h2 id="workflow-novelty-heading">What is CodeTrace’s novelty?</h2>
+          <p><strong>The contribution is the connected, evidence-preserving workflow—not the claim that CodeTrace invented leakage detection or automatic repair.</strong> CodeTrace links a potential evaluation issue to notebook source, lets a person review a narrow repair, keeps the original and corrected experiments separate, checks the repair against saved source and execution evidence, and reports metric impact only when comparisons are justified.</p>
+          <p>This makes the system’s central question: <em>Can a reviewer follow an evaluation-risk finding through an approved correction and controlled re-execution to see what changed, what was verified, and what remains uncertain?</em></p>
+          <p class="caveat-note">This integration is an implemented project contribution, not proof of scientific priority or superiority. A research novelty claim still requires a literature review and empirical comparison with existing detection, repair, and validation tools.</p>
+        </section>
+
+        <a class="btn about-action" href="#inspect">Inspect a notebook</a>
+      </div>
+    </section>
+
     <section class="about-view hidden" id="about-view" aria-labelledby="about-title">
       <div class="container about-content">
         <h1 class="about-title" id="about-title">Your model passed the test. But was the test trustworthy?</h1>
@@ -417,14 +474,84 @@
           <h2>Follow the evidence through the notebook</h2>
           <p>CodeTrace inspects notebook source without running it. It identifies recognizable data-loading, preprocessing, split, model, prediction, and evaluation calls, then connects operations when source code shows shared variable references. Each extracted operation points back to its cell and line so you can inspect the original context.</p>
         </section>
+        <section class="about-section about-novelty">
+          <h2>Our contribution, stated clearly</h2>
+          <p><strong>CodeTrace connects evidence-linked notebook diagnosis to human-approved repair, isolated re-execution, scoped repair verification, and cautious metric comparison in one traceable workflow.</strong> The contribution is this integration and the evidence it preserves—not a claim to be the first leakage detector or code fixer. Its scientific novelty and value must be established through literature review and empirical evaluation.</p>
+          <a class="text-button" href="#workflow">See the complete workflow and contribution →</a>
+        </section>
         <section class="about-section">
           <h2>Trace, audit, and review</h2>
-          <p>The pipeline trace is a compact, X-Ray-inspired view of the workflow that can be supported by static source. The audit flags a limited set of recognizable patterns, with evidence, confidence definitions, and practical review guidance. Evidence reports preserve the available findings, repair records, executions, verification results, comparisons, and limitations.</p>
-          <p>Current checks are deliberately narrow: they can flag test-named variables passed to fitting, training-named variables passed to evaluation, and common preprocessing fits that appear before a later split. A flagged pattern is a potential risk, not a confirmed defect.</p>
+          <p>The pipeline trace is a source-based view of the workflow. The audit checks a limited set of recognizable patterns and presents findings with evidence, confidence, and review guidance. A flagged pattern is a potential risk, not proof of a defect.</p>
+          <p>For supported findings, CodeTrace can propose a repair. You review and approve or reject it; an approved corrected notebook is stored separately so the original stays unchanged. You can generate evidence reports from the analysis and any saved repair, execution, verification, and comparison records.</p>
         </section>
         <section class="about-section">
           <h2>Interpret with care</h2>
-          <p>Static analysis cannot establish every runtime fact. Variable names and source order may not reflect actual data contents or execution order; dynamic code, aliases, hidden state, and dataset contents may be outside the analyzer’s reach. CodeTrace never loads notebook-referenced paths or URLs during analysis. Notebook cells run only after an explicit request in Experiments, inside Docker isolation; execution success does not prove a repair is correct or a model trustworthy.</p>
+          <p>Static analysis cannot establish every runtime fact. Variable names and source order may not reflect actual data contents or execution order; dynamic code, aliases, hidden state, and dataset contents may be outside the analyzer’s reach. CodeTrace never loads notebook-referenced paths or URLs during analysis. Notebook cells run only after an explicit request in Experiments, through the isolated execution service; execution success does not prove a repair is correct or a model trustworthy.</p>
+        </section>
+        <section class="about-section about-faq" aria-labelledby="about-faq-heading">
+          <h2 id="about-faq-heading">Frequently asked questions</h2>
+          <details>
+            <summary>What services does CodeTrace provide?</summary>
+            <p>Choose a service below to learn what it does and what to expect.</p>
+            <div class="service-faq">
+              <details>
+                <summary>Notebook inspection and pipeline tracing</summary>
+                <p>Upload a Jupyter notebook to validate its structure, inspect cells and recognized ML operations, and explore a source-linked pipeline graph. Analysis does not execute notebook code.</p>
+              </details>
+              <details>
+                <summary>Leakage and evaluation-risk review</summary>
+                <p>Review supported static warnings for patterns such as preprocessing before a split, target-column inclusion, or suspicious use of evaluation data. Findings show evidence and limitations; they are not runtime proof.</p>
+              </details>
+              <details>
+                <summary>Dataset profiling and train/test comparison</summary>
+                <p>Profile an explicitly selected CSV using aggregate summaries. Compare separately uploaded train/test CSVs for exact-row and selected identifier/group overlap. Objective-aware guidance distinguishes unseen-group testing from future prediction for known groups; the comparison does not inspect notebook paths or infer intended policy.</p>
+              </details>
+              <details>
+                <summary>Human-reviewed notebook repairs</summary>
+                <p>Inspect a deterministic repair proposal, approve or reject it, and generate a separate corrected notebook for supported patterns. Complex or ambiguous repairs remain for manual review.</p>
+              </details>
+              <details>
+                <summary>Isolated experiment execution</summary>
+                <p>When Docker and the runner image are available, explicitly run the original and corrected notebooks in separate offline containers with resource limits and only the datasets you attach.</p>
+              </details>
+              <details>
+                <summary>Repair verification and metric comparison</summary>
+                <p>Compare saved original/corrected execution records, evaluate evidence for the approved repair, and show labeled metric changes only when recorded settings support comparison. This does not prove overall model validity.</p>
+              </details>
+              <details>
+                <summary>Evidence report generation</summary>
+                <p>Generate HTML, PDF, and JSON artifacts from saved analysis, repairs, experiments, and verification records. The report identifies missing evidence and limitations.</p>
+              </details>
+            </div>
+          </details>
+          <details>
+            <summary>How does the full CodeTrace workflow work?</summary>
+            <p>Upload and inspect a notebook, review evidence-linked risks, approve a supported repair, explicitly run both versions when isolated execution is available, verify the specific repair, compare metrics only when configurations are comparable, and generate a report. <a href="#workflow">Open the workflow page for the step-by-step diagram and details.</a></p>
+          </details>
+          <details>
+            <summary>What does our project do?</summary>
+            <p>CodeTrace helps review machine-learning notebooks for recognizable data leakage and evaluation risks. For example, if a scaler is fitted on all feature data before the train/test split, it can connect that source pattern to the relevant cells, explain why it may matter, and offer a supported repair for your review.</p>
+          </details>
+          <details>
+            <summary>Who can use CodeTrace?</summary>
+            <p>Students, instructors, and practitioners can use it to inspect a notebook, discuss a possible evaluation flaw, or support a code review. It is a review aid, not a replacement for domain expertise or a complete audit.</p>
+          </details>
+          <details>
+            <summary>Does a tool like this already exist?</summary>
+            <p>There are notebook-analysis, code-quality, and machine-learning auditing tools. CodeTrace does not claim to be the first or only tool for detecting leakage. It focuses on making a limited set of notebook evaluation-risk findings traceable to source and reviewable in one workflow.</p>
+          </details>
+          <details>
+            <summary>How is CodeTrace different from other projects?</summary>
+            <p>It combines source-linked pipeline reconstruction, evidence-bearing findings, human-reviewed repair proposals, separate original and corrected notebook records, and reports that preserve limitations. These capabilities are connected so a reviewer can follow evidence across the workflow; each analysis remains bounded and may miss issues.</p>
+          </details>
+          <details>
+            <summary>What are the novelty and unique features added?</summary>
+            <p>The implemented project contribution is the integrated, traceable review workflow: findings link to notebook cells and pipeline nodes; supported repairs require explicit approval and preserve the original; and reports retain available evidence and uncertainty. This describes what CodeTrace adds as a project, not a claim that its individual rules or methods are scientifically unprecedented.</p>
+          </details>
+          <details>
+            <summary>Does uploading a notebook execute it?</summary>
+            <p>No. Upload and analysis inspect the notebook source without executing code or opening paths and URLs referenced in it. Execution is a separate action and is available only when the isolated execution service is configured.</p>
+          </details>
         </section>
         <a class="btn about-action" href="#inspect">Inspect a notebook</a>
       </div>

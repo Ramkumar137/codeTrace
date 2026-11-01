@@ -15,6 +15,7 @@ const notebookSummary = document.getElementById("notebook-summary");
 const summaryBody = document.getElementById("notebook-summary-body");
 const inspectView = document.getElementById("inspect-view");
 const aboutView = document.getElementById("about-view");
+const workflowView = document.getElementById("workflow-view");
 const workspace = document.getElementById("investigation-workspace");
 const cellSelector = document.getElementById("cell-selector");
 const cellMeta = document.getElementById("cell-meta");
@@ -224,6 +225,7 @@ window.setInterval(checkApiHealth, HEALTH_CHECK_INTERVAL_MS);
 
 function showRoute() {
   const aboutIsVisible = window.location.hash === "#about";
+  const workflowIsVisible = window.location.hash === "#workflow";
   let workspaceRoute = window.location.hash.slice(1);
   if (workspaceRoute === "inspect") {
     workspaceRoute = currentNotebook ? "summary" : "upload";
@@ -233,11 +235,13 @@ function showRoute() {
     workspaceRoute = currentNotebook ? "summary" : "upload";
   }
   const hasNotebook = Boolean(currentNotebook);
-  const showWorkspace = !aboutIsVisible && hasNotebook;
-  const showUpload = !aboutIsVisible && !hasNotebook;
+  const showProductInfo = aboutIsVisible || workflowIsVisible;
+  const showWorkspace = !showProductInfo && hasNotebook;
+  const showUpload = !showProductInfo && !hasNotebook;
 
-  inspectView.classList.toggle("hidden", aboutIsVisible);
+  inspectView.classList.toggle("hidden", showProductInfo);
   aboutView.classList.toggle("hidden", !aboutIsVisible);
+  workflowView.classList.toggle("hidden", !workflowIsVisible);
   uploadStage.classList.toggle("hidden", !showUpload);
   workspace.classList.toggle("hidden", !showWorkspace);
   if (showWorkspace) {
@@ -256,7 +260,8 @@ function showRoute() {
     }
   }
   document.querySelectorAll(".primary-nav a").forEach((link) => {
-    if (link.dataset.route === (aboutIsVisible ? "about" : "inspect")) {
+    const activeRoute = aboutIsVisible || workflowIsVisible ? "about" : "inspect";
+    if (link.dataset.route === activeRoute) {
       link.setAttribute("aria-current", "page");
     } else {
       link.removeAttribute("aria-current");
@@ -1241,6 +1246,11 @@ overlapForm.addEventListener("submit", async (event) => {
     currentNotebook.analysis.external_dataset_findings = data.overlap.findings;
     renderFindings(getCurrentFindings());
     renderRepairCenter(getCurrentRepairProposals());
+    const objectiveReview = document.createElement("li");
+    objectiveReview.className = "finding-card";
+    objectiveReview.textContent =
+      `Evaluation objective · ${data.overlap.objective_review.message}`;
+    overlapResults.appendChild(objectiveReview);
     data.overlap.checks.forEach((check) => {
       const item = document.createElement("li");
       item.className = "finding-card";
@@ -1396,6 +1406,8 @@ function isOverlapSuccessResponse(data) {
     overlap &&
     Array.isArray(overlap.checks) &&
     Array.isArray(overlap.findings) &&
+    overlap.objective_review &&
+    typeof overlap.objective_review.message === "string" &&
     overlap.findings.every((finding) =>
       finding &&
       typeof finding.id === "string" &&

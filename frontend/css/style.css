@@ -1082,11 +1082,13 @@ main {
   overflow-wrap: anywhere;
 }
 
-.about-view {
-  padding-block: clamp(26px, 5vw, 54px);
+.about-view,
+.workflow-view {
+  padding-block: 12px 40px;
 }
 
-.about-content {
+.about-content,
+.workflow-content {
   max-width: 800px;
 }
 
@@ -1117,6 +1119,152 @@ main {
 .about-section p {
   margin: 0 0 12px;
   color: var(--text-muted);
+}
+
+.about-section ul {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding-left: 22px;
+  color: var(--text-muted);
+}
+
+.about-section li {
+  padding-left: 3px;
+}
+
+.about-section li strong {
+  color: var(--text);
+}
+
+.workflow-section {
+  margin: 0 0 38px;
+}
+
+.workflow-section > h2 {
+  margin: 0 0 18px;
+  font-size: 1.3rem;
+  letter-spacing: -0.02em;
+}
+
+.workflow-diagram {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workflow-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 14px;
+  padding-bottom: 28px;
+}
+
+.workflow-node:not(:last-child)::after {
+  position: absolute;
+  top: 52px;
+  bottom: 0;
+  left: 24px;
+  color: var(--accent);
+  border-left: 2px solid var(--border);
+  content: "";
+}
+
+.workflow-number {
+  z-index: 1;
+  display: grid;
+  width: 50px;
+  height: 50px;
+  place-items: center;
+  color: var(--accent);
+  background: var(--surface);
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.workflow-node > div {
+  padding: 15px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 3px 12px rgb(22 34 51 / 5%);
+}
+
+.workflow-node h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.workflow-node p,
+.workflow-novelty p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.workflow-node p {
+  font-size: 0.92rem;
+}
+
+.workflow-novelty {
+  padding: 20px;
+  background: var(--surface-muted);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+}
+
+.workflow-novelty > h2 {
+  margin-top: 0;
+}
+
+.workflow-novelty p + p {
+  margin-top: 12px;
+}
+
+.workflow-novelty .caveat-note {
+  margin-top: 14px;
+}
+
+.service-faq {
+  margin: 0 4px 14px 18px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+
+.service-faq details:first-of-type {
+  border-top: 0;
+}
+
+.service-faq summary {
+  font-size: 0.93rem;
+}
+
+.about-faq details {
+  border-bottom: 1px solid var(--border);
+}
+
+.about-faq details:first-of-type {
+  border-top: 1px solid var(--border);
+}
+
+.about-faq summary {
+  padding: 14px 4px;
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.about-faq summary:focus-visible {
+  outline: 3px solid rgb(49 95 206 / 35%);
+  outline-offset: 2px;
+}
+
+.about-faq details p {
+  padding: 0 4px 8px;
 }
 
 .about-action {
@@ -1206,6 +1354,7 @@ main {
 }
 
 .finding-filters select,
+.overlap-form select,
 .overlap-form input[type="text"] {
   min-height: 38px;
   padding: 7px 10px;
@@ -1285,7 +1434,8 @@ main {
   }
 
   .overlap-file-fields input,
-  .overlap-identifier-fields input {
+  .overlap-identifier-fields input,
+  .overlap-identifier-fields select {
     margin-bottom: 8px;
   }
 }

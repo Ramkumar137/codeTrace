@@ -1375,6 +1375,7 @@ async def compare_train_test_datasets(
     test_file: UploadFile | str | None = File(default=None),
     identifier_column: str | None = Form(default=None),
     group_column: str | None = Form(default=None),
+    evaluation_objective: str = Form(default="unspecified"),
 ):
     """Compare separately uploaded training and test CSVs without saving row values."""
     files = [file for file in (train_file, test_file) if isinstance(file, UploadFile)]
@@ -1391,6 +1392,7 @@ async def compare_train_test_datasets(
                 test_content,
                 identifier_column=identifier_column,
                 group_column=group_column,
+                evaluation_objective=evaluation_objective,
             )
         except DatasetAnalysisError as error:
             raise HTTPException(

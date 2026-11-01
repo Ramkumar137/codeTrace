@@ -7,6 +7,14 @@ from typing import Any
 from backend.app.services.dataset_analyzer import DatasetAnalysisError
 
 
+EVALUATION_OBJECTIVES = {
+    "unspecified",
+    "unseen_groups",
+    "future_known_groups",
+    "independent_rows",
+}
+
+
 def _read_rows(content: bytes, dataset_label: str) -> tuple[list[str], list[list[str]]]:
     try:
         text = content.decode("utf-8-sig")
@@ -108,8 +116,16 @@ def analyze_train_test_overlap(
     test_content: bytes,
     identifier_column: str | None = None,
     group_column: str | None = None,
+    evaluation_objective: str = "unspecified",
 ) -> dict[str, Any]:
     """Compare exact records and caller-selected IDs; never return row values."""
+    if evaluation_objective not in EVALUATION_OBJECTIVES:
+        raise DatasetAnalysisError(
+            "invalid_evaluation_objective",
+            "Select a supported evaluation objective.",
+            422,
+        )
+
     train_columns, train_rows = _read_rows(train_content, "training")
     test_columns, test_rows = _read_rows(test_content, "test")
     train_records = [dict(zip(train_columns, row)) for row in train_rows]
@@ -215,44 +231,60 @@ def analyze_train_test_overlap(
         )
         if shared_values:
             is_group = check_name == "group_overlap"
-            findings.append(
-                _finding(
-                    finding_id=finding_id,
-                    category="train_test_overlap",
-                    title=title,
-                    description=(
-                        f"{len(shared_values)} distinct non-empty value(s) in the "
-                        f"configured {('group' if is_group else 'identifier')} column "
-                        "appear in both splits."
-                    ),
-                    severity="high" if is_group else "medium",
-                    confidence="high",
-                    recommendation=(
-                        "Use a group-aware split so every configured group is assigned "
-                        "to only one partition."
-                        if is_group
-                        else "Verify these are stable entity identifiers and keep each entity in one partition."
-                    ),
-                    explanation=(
-                        "The explicitly selected column values were compared across the "
-                        "two uploaded partitions."
-                    ),
-                    evidence={
-                        "train_filename": train_filename,
-                        "test_filename": test_filename,
-                        "column": column,
-                        "overlap_count": len(shared_values),
-                        "overlapping_values_returned": False,
-                    },
-                    limitation=(
-                        "Identifier semantics are supplied by the user; matching values do not establish the intended split policy."
-                    ),
+            if is_group:
+                (
+                    severity,
+                    recommendation,
+                    explanation,
+                    objective_assessment,
+                ) = _group_overlap_guidance(evaluation_objective)
+            else:
+                severity = "medium"
+                recommendation = (
+                    "Verify these are stable entity identifiers and keep each entity in one partition."
                 )
+                explanation = (
+                    "The explicitly selected column values were compared across the "
+                    "two uploaded partitions."
+                )
+                objective_assessment = None
+            finding = _finding(
+                finding_id=finding_id,
+                category="train_test_overlap",
+                title=title,
+                description=(
+                    f"{len(shared_values)} distinct non-empty value(s) in the "
+                    f"configured {('group' if is_group else 'identifier')} column "
+                    "appear in both splits."
+                ),
+                severity=severity,
+                confidence="high",
+                recommendation=recommendation,
+                explanation=explanation,
+                evidence={
+                    "train_filename": train_filename,
+                    "test_filename": test_filename,
+                    "column": column,
+                    "overlap_count": len(shared_values),
+                    "overlapping_values_returned": False,
+                    "evaluation_objective": evaluation_objective,
+                },
+                limitation=(
+                    objective_assessment
+                    or "Identifier semantics are supplied by the user; matching values do not establish the intended split policy."
+                ),
             )
+            if is_group and evaluation_objective == "future_known_groups":
+                finding["classification"] = "informational_review"
+                finding["status"] = "contextual"
+            findings.append(finding)
 
+    objective_review = _objective_review(evaluation_objective, bool(group_column))
     return {
         "train_filename": train_filename,
         "test_filename": test_filename,
+        "evaluation_objective": evaluation_objective,
+        "objective_review": objective_review,
         "train_row_count": len(train_rows),
         "test_row_count": len(test_rows),
         "checks": checks,
@@ -262,4 +294,68 @@ def analyze_train_test_overlap(
             "Exact row equality is not treated as proof that rows represent the same individual.",
             "Identifier and group semantics are configured by the user; raw values are not returned or retained.",
         ],
+    }
+
+
+def _group_overlap_guidance(
+    evaluation_objective: str,
+) -> tuple[str, str, str, str]:
+    if evaluation_objective == "unseen_groups":
+        return (
+            "high",
+            "Use a group-aware split so every configured group is assigned to only one partition.",
+            "Shared groups conflict with the declared goal of evaluating generalization to entirely unseen groups.",
+            "Group overlap conflicts with the declared unseen-group evaluation objective.",
+        )
+    if evaluation_objective == "future_known_groups":
+        return (
+            "informational",
+            "Group overlap is compatible with prediction for known entities; verify that training observations precede test observations and that features contain no post-cutoff information.",
+            "The declared objective allows entities to occur in both partitions. This check does not inspect timestamps or establish chronological separation.",
+            "Group overlap alone is not a defect for the declared known-entity future-prediction objective; temporal validity remains unchecked.",
+        )
+    if evaluation_objective == "independent_rows":
+        return (
+            "medium",
+            "Determine whether rows from one group are statistically dependent. If so, choose a split that matches the intended generalization target.",
+            "Shared group values may be acceptable for independent-row evaluation, but dependence within groups can make a row-wise split optimistic.",
+            "The effect of group overlap depends on within-group dependence and the intended deployment population.",
+        )
+    return (
+        "high",
+        "Specify whether evaluation targets unseen groups or future observations for known groups. Use a group-aware split when testing generalization to unseen groups.",
+        "Shared group values were observed, but the appropriate split policy depends on the research objective.",
+        "The evaluation objective was not supplied, so group overlap cannot be classified as an evaluation defect.",
+    )
+
+
+def _objective_review(evaluation_objective: str, has_group_column: bool) -> dict[str, str]:
+    if not has_group_column:
+        return {
+            "objective": evaluation_objective,
+            "status": "not_applicable",
+            "message": "Select a group column to assess whether entity overlap matches the evaluation objective.",
+        }
+    if evaluation_objective == "unseen_groups":
+        return {
+            "objective": evaluation_objective,
+            "status": "unseen_group_holdout",
+            "message": "For generalization to unseen entities, each group should appear in only one split.",
+        }
+    if evaluation_objective == "future_known_groups":
+        return {
+            "objective": evaluation_objective,
+            "status": "temporal_validation_required",
+            "message": "Entity overlap can be expected, but this checker cannot confirm chronological ordering or detect post-cutoff features.",
+        }
+    if evaluation_objective == "independent_rows":
+        return {
+            "objective": evaluation_objective,
+            "status": "dependence_review_required",
+            "message": "Decide whether within-entity dependence is relevant to the intended deployment population.",
+        }
+    return {
+        "objective": evaluation_objective,
+        "status": "objective_required",
+        "message": "Choose the intended evaluation objective before interpreting entity overlap.",
     }
