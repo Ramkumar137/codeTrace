@@ -37,6 +37,12 @@ const cancelExecutionButton = document.getElementById("cancel-execution-btn");
 const executionStatusMessage = document.getElementById("execution-status");
 const executionResult = document.getElementById("execution-result");
 const executionOutputs = document.getElementById("execution-outputs");
+const loadVerificationExecutionsButton = document.getElementById("load-verification-executions");
+const verificationOriginalExecution = document.getElementById("verification-original-execution");
+const verificationCorrectedExecution = document.getElementById("verification-corrected-execution");
+const startVerificationButton = document.getElementById("start-verification");
+const verificationStatusMessage = document.getElementById("verification-status-message");
+const verificationResults = document.getElementById("verification-results");
 const overlapForm = document.getElementById("overlap-form");
 const overlapTrainFile = document.getElementById("overlap-train-file");
 const overlapTestFile = document.getElementById("overlap-test-file");
@@ -49,6 +55,7 @@ let currentNotebookId = null;
 let currentNotebookToken = null;
 let correctedNotebookId = null;
 let currentExecutionId = null;
+let currentVerificationId = null;
 let executionPollTimer = null;
 let currentPipelineTrace = null;
 let repairDecisions = new Map();
@@ -214,7 +221,7 @@ function showRoute() {
   if (workspaceRoute === "inspect") {
     workspaceRoute = currentNotebook ? "summary" : "upload";
   }
-  const validWorkspaceRoutes = ["summary", "overview", "pipeline", "audit", "repairs", "execution", "cells", "evidence"];
+  const validWorkspaceRoutes = ["summary", "overview", "pipeline", "audit", "repairs", "execution", "verification", "cells", "evidence"];
   if (!validWorkspaceRoutes.includes(workspaceRoute)) {
     workspaceRoute = currentNotebook ? "summary" : "upload";
   }
@@ -329,6 +336,11 @@ uploadForm.addEventListener("submit", async (event) => {
     currentNotebookToken = data.access_token;
     correctedNotebookId = null;
     currentExecutionId = null;
+    currentVerificationId = null;
+    verificationOriginalExecution.replaceChildren(new Option("Select an execution", ""));
+    verificationCorrectedExecution.replaceChildren(new Option("Select an execution", ""));
+    verificationResults.replaceChildren();
+    showVerificationStatus("", "hidden");
     executionDatasetSelect.replaceChildren();
     executionDatasetList.replaceChildren();
     executionNotebookSelect.replaceChildren(
@@ -368,6 +380,11 @@ document.getElementById("choose-another-notebook").addEventListener("click", () 
   currentNotebookToken = null;
   correctedNotebookId = null;
   currentExecutionId = null;
+  currentVerificationId = null;
+  verificationOriginalExecution.replaceChildren(new Option("Select an execution", ""));
+  verificationCorrectedExecution.replaceChildren(new Option("Select an execution", ""));
+  verificationResults.replaceChildren();
+  showVerificationStatus("", "hidden");
   executionDatasetList.replaceChildren();
   executionDatasetSelect.replaceChildren();
   executionDatasetForm.reset();
@@ -758,6 +775,401 @@ function renderExecution(execution) {
     executionOutputs.appendChild(article);
   });
   document.getElementById("execution-logs").textContent = execution.logs || "No runner logs.";
+}
+
+loadVerificationExecutionsButton.addEventListener("click", async () => {
+  if (!currentNotebookId || !currentNotebookToken) {
+    showVerificationStatus("Upload a notebook before loading its saved experiments.", "error");
+    return;
+  }
+  loadVerificationExecutionsButton.disabled = true;
+  showVerificationStatus("Loading saved execution records…", "loading");
+  try {
+    const headers = { Authorization: `Bearer ${currentNotebookToken}` };
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/executions`,
+      { headers }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "Saved executions could not be loaded.");
+    }
+    const executions = data.executions || [];
+    const originalRuns = executions.filter(
+      (item) => item.notebook_id === currentNotebookId && item.notebook_type === "original"
+    );
+    const correctedRuns = executions.filter(
+      (item) => item.notebook_id === correctedNotebookId && item.notebook_type === "corrected"
+    );
+    populateExecutionOptions(verificationOriginalExecution, originalRuns);
+    populateExecutionOptions(verificationCorrectedExecution, correctedRuns);
+    updateVerificationButtonState();
+    showVerificationStatus(
+      `Loaded ${originalRuns.length} original and ${correctedRuns.length} corrected execution record(s).`,
+      originalRuns.length && correctedRuns.length ? "success" : "loading"
+    );
+    const historyResponse = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/verifications`,
+      { headers }
+    );
+    const history = await historyResponse.json();
+    if (!historyResponse.ok) {
+      throw new Error(history?.detail?.message || "Verification history could not be loaded.");
+    }
+    verificationResults.replaceChildren();
+    (history.verifications || []).forEach(renderVerification);
+    if (history.verifications?.length) {
+      showVerificationStatus(
+        `Loaded saved execution records and ${history.verifications.length} prior verification record(s).`,
+        "success"
+      );
+    }
+  } catch (error) {
+    showVerificationStatus(
+      error instanceof Error ? error.message : "Saved verification records could not be loaded.",
+      "error"
+    );
+  } finally {
+    loadVerificationExecutionsButton.disabled = false;
+  }
+});
+
+verificationOriginalExecution.addEventListener("change", updateVerificationButtonState);
+verificationCorrectedExecution.addEventListener("change", updateVerificationButtonState);
+
+startVerificationButton.addEventListener("click", async () => {
+  if (
+    !currentNotebookId ||
+    !correctedNotebookId ||
+    !currentNotebookToken ||
+    !verificationOriginalExecution.value ||
+    !verificationCorrectedExecution.value
+  ) {
+    showVerificationStatus("Select saved executions for both notebook versions.", "error");
+    return;
+  }
+  startVerificationButton.disabled = true;
+  showVerificationStatus("Evaluating stored source and execution evidence…", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/verifications`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${currentNotebookToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          corrected_notebook_id: correctedNotebookId,
+          original_execution_id: verificationOriginalExecution.value,
+          corrected_execution_id: verificationCorrectedExecution.value
+        })
+      }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "Repair verification could not be completed.");
+    }
+    currentVerificationId = data.verification_id;
+    renderVerification(data);
+    showVerificationStatus(
+      `Verification ${data.verification_id} saved. Review each finding and the separate experiment comparison below.`,
+      "success"
+    );
+  } catch (error) {
+    showVerificationStatus(
+      error instanceof Error ? error.message : "Repair verification could not be completed.",
+      "error"
+    );
+  } finally {
+    updateVerificationButtonState();
+  }
+});
+
+function populateExecutionOptions(select, executions) {
+  select.replaceChildren(new Option("Select an execution", ""));
+  executions.forEach((execution) => {
+    const started = execution.started_at
+      ? new Date(execution.started_at).toLocaleString()
+      : "start time unavailable";
+    const label = `${executionStatusLabel(execution.status)} · ${started} · ${execution.execution_id.slice(0, 8)}`;
+    select.add(new Option(label, execution.execution_id));
+  });
+}
+
+function updateVerificationButtonState() {
+  startVerificationButton.disabled = !(
+    correctedNotebookId &&
+    verificationOriginalExecution.value &&
+    verificationCorrectedExecution.value
+  );
+}
+
+function showVerificationStatus(message, state) {
+  verificationStatusMessage.textContent = message;
+  verificationStatusMessage.className =
+    state === "hidden" ? "graph-status hidden" : `graph-status ${state}`;
+}
+
+function verificationStatusLabel(status) {
+  return ({
+    verified: "Verified",
+    partially_verified: "Partially verified",
+    not_verified: "Not verified",
+    inconclusive: "Inconclusive",
+    execution_failed: "Execution failed",
+    not_applicable: "Not applicable"
+  })[status] || "Unavailable";
+}
+
+function renderVerification(report) {
+  const article = document.createElement("article");
+  article.className = "verification-report workspace-card";
+  article.dataset.verificationId = report.verification_id;
+  const heading = document.createElement("h3");
+  heading.textContent = `Verification · ${report.verified_at ? new Date(report.verified_at).toLocaleString() : "saved record"}`;
+  const ids = document.createElement("p");
+  ids.className = "finding-meta";
+  ids.textContent =
+    `Original run ${report.original_execution_id} · Corrected run ${report.corrected_execution_id}`;
+  article.append(heading, ids);
+
+  const statusHeading = document.createElement("h4");
+  statusHeading.textContent =
+    `Original execution: ${executionStatusLabel(report.original_execution_status)} · ` +
+    `Corrected execution: ${executionStatusLabel(report.corrected_execution_status)}`;
+  article.appendChild(statusHeading);
+  (report.findings || []).forEach((item) => article.appendChild(renderVerifiedFinding(item)));
+  if (report.comparison) {
+    article.appendChild(renderExperimentComparison(report.comparison));
+  }
+  (report.limitations || []).forEach((limitation) => {
+    const note = document.createElement("p");
+    note.className = "finding-caveat";
+    note.textContent = `Overall limitation: ${limitation}`;
+    article.appendChild(note);
+  });
+  verificationResults.appendChild(article);
+}
+
+function renderVerifiedFinding(item) {
+  const section = document.createElement("section");
+  section.className = "verification-finding";
+  const heading = document.createElement("h4");
+  heading.textContent = `${item.finding_title} · ${item.finding_id}`;
+  const status = document.createElement("span");
+  status.className = "verification-status";
+  status.dataset.status = item.verification_status;
+  status.textContent = verificationStatusLabel(item.verification_status);
+  const repair = document.createElement("p");
+  repair.className = "finding-meta";
+  repair.textContent = `Repair ${item.repair_id} · finding category ${String(item.finding_category || "unknown").replaceAll("_", " ")}`;
+  section.append(heading, status, repair);
+
+  const cellActions = document.createElement("div");
+  cellActions.className = "verification-cell-links";
+  (item.original_cell_references || []).forEach((reference) => {
+    if (!Number.isInteger(reference.cell_index)) {
+      return;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "text-button";
+    button.textContent = `Open original cell ${reference.cell_index + 1}`;
+    button.addEventListener("click", () => {
+      selectCell(reference.cell_index);
+      window.location.hash = "#cells";
+    });
+    cellActions.appendChild(button);
+  });
+  const correctedCells = document.createElement("p");
+  correctedCells.className = "finding-meta";
+  correctedCells.textContent = `Corrected cell references: ${
+    (item.corrected_cell_references || [])
+      .map((reference) => Number.isInteger(reference.cell_index) ? reference.cell_index + 1 : "")
+      .filter(Boolean)
+      .map((index) => `Cell ${index}`)
+      .join(", ") || "Not available"
+  }`;
+  section.append(cellActions, correctedCells);
+
+  const finding = getCurrentFindings().find((candidate) => candidate.id === item.finding_id);
+  if (finding) {
+    const navigation = document.createElement("div");
+    navigation.className = "finding-actions";
+    const auditButton = document.createElement("button");
+    auditButton.type = "button";
+    auditButton.className = "text-button";
+    auditButton.textContent = "View finding";
+    auditButton.addEventListener("click", () => {
+      window.location.hash = "#audit";
+      window.requestAnimationFrame(() => {
+        document.querySelectorAll(".finding-card").forEach((card) => {
+          if (card.dataset.findingId === finding.id) {
+            card.scrollIntoView({ behavior: "smooth", block: "center" });
+            card.focus?.();
+          }
+        });
+      });
+    });
+    navigation.appendChild(auditButton);
+    const nodeId = finding.related_pipeline_node_ids?.[0];
+    if (nodeId) {
+      const graphButton = document.createElement("button");
+      graphButton.type = "button";
+      graphButton.className = "text-button";
+      graphButton.textContent = "View pipeline evidence";
+      graphButton.addEventListener("click", () => openFindingPipelineNode(finding, nodeId));
+      navigation.appendChild(graphButton);
+    }
+    section.appendChild(navigation);
+  }
+
+  appendVerificationList(section, "Checks performed", item.checks_performed, "check");
+  appendVerificationList(section, "Evidence", item.evidence, "evidence");
+  appendVerificationList(section, "Reasons", item.reasons, "reason");
+  appendVerificationList(section, "Remaining risks", item.remaining_risks, "risk");
+  appendVerificationList(section, "Limitations", item.limitations, "limitation");
+  return section;
+}
+
+function appendVerificationList(parent, title, values, className) {
+  if (!values?.length) {
+    return;
+  }
+  const heading = document.createElement("h5");
+  heading.textContent = title;
+  const list = document.createElement("ul");
+  list.className = `verification-list verification-${className}`;
+  values.forEach((value) => {
+    const item = document.createElement("li");
+    item.textContent = typeof value === "string" ? value : JSON.stringify(value);
+    list.appendChild(item);
+  });
+  parent.append(heading, list);
+}
+
+function renderExperimentComparison(comparison) {
+  const section = document.createElement("section");
+  section.className = "verification-comparison";
+  const heading = document.createElement("h4");
+  heading.textContent = "Experiment comparison (separate from repair verification)";
+  const comparability = document.createElement("p");
+  comparability.className = comparison.comparable
+    ? "verification-comparable"
+    : "verification-incomparable";
+  comparability.textContent = comparison.comparable
+    ? "Experimental configurations are comparable based on the recorded checks."
+    : "Metric deltas unavailable: comparability was not established.";
+  section.append(heading, comparability);
+
+  const executionTable = document.createElement("dl");
+  executionTable.className = "execution-metadata";
+  [
+    ["Original status", comparison.original_execution?.status],
+    ["Corrected status", comparison.corrected_execution?.status],
+    ["Original duration", formatExecutionDuration(comparison.original_execution?.duration_seconds)],
+    ["Corrected duration", formatExecutionDuration(comparison.corrected_execution?.duration_seconds)],
+    ["Original cells", comparison.original_execution?.executed_cell_count],
+    ["Corrected cells", comparison.corrected_execution?.executed_cell_count]
+  ].forEach(([label, value]) => {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const detail = document.createElement("dd");
+    detail.textContent = value === undefined || value === null ? "Unavailable" : String(value);
+    executionTable.append(term, detail);
+  });
+  section.appendChild(executionTable);
+  appendVerificationList(
+    section,
+    "Original dataset references",
+    comparison.original_execution?.dataset_references,
+    "original-datasets"
+  );
+  appendVerificationList(
+    section,
+    "Corrected dataset references",
+    comparison.corrected_execution?.dataset_references,
+    "corrected-datasets"
+  );
+  appendVerificationList(
+    section,
+    "Original model, split, and random-seed settings",
+    comparison.original_setup ? [comparison.original_setup] : [],
+    "original-settings"
+  );
+  appendVerificationList(
+    section,
+    "Corrected model, split, and random-seed settings",
+    comparison.corrected_setup ? [comparison.corrected_setup] : [],
+    "corrected-settings"
+  );
+
+  const metrics = comparison.metric_comparisons || [];
+  const metricTable = document.createElement("table");
+  metricTable.className = "verification-metrics";
+  const header = document.createElement("tr");
+  ["Metric", "Original", "Corrected", "Corrected − original"].forEach((label) => {
+    const cell = document.createElement("th");
+    cell.scope = "col";
+    cell.textContent = label;
+    header.appendChild(cell);
+  });
+  const tableHead = document.createElement("thead");
+  tableHead.appendChild(header);
+  const tableBody = document.createElement("tbody");
+  metrics.forEach((metric) => {
+    const row = document.createElement("tr");
+    [
+      metric.name,
+      formatMetricValues(metric.original_values, metric.unit) || "Not captured",
+      formatMetricValues(metric.corrected_values, metric.unit) || "Not captured",
+      metric.comparison_available
+        ? formatMetricValues(metric.deltas, metric.unit)
+        : "Unavailable"
+    ].forEach((value) => {
+      const cell = document.createElement("td");
+      cell.textContent = String(value);
+      row.appendChild(cell);
+    });
+    tableBody.appendChild(row);
+  });
+  metricTable.append(tableHead, tableBody);
+  if (metrics.length) {
+    section.appendChild(metricTable);
+    const metricNote = document.createElement("p");
+    metricNote.className = "finding-caveat";
+    metricNote.textContent =
+      "Metric differences are descriptive only; a higher value does not establish a successful repair or a more reliable model.";
+    section.appendChild(metricNote);
+  } else {
+    const noMetrics = document.createElement("p");
+    noMetrics.textContent = "No supported labeled evaluation metrics were captured.";
+    section.appendChild(noMetrics);
+  }
+  appendVerificationList(
+    section,
+    "Comparability reasons and limitations",
+    comparison.comparability_reasons,
+    "comparison-reasons"
+  );
+  appendVerificationList(
+    section,
+    "Execution configuration differences",
+    comparison.setup_differences,
+    "configuration-differences"
+  );
+  return section;
+}
+
+function formatExecutionDuration(duration) {
+  return typeof duration === "number" ? `${duration.toFixed(2)} seconds` : "Unavailable";
+}
+
+function formatMetricValues(values, unit) {
+  return (values || [])
+    .map((value) => `${value}${unit === "percent" ? "%" : ""}`)
+    .join(", ");
 }
 
 overlapForm.addEventListener("submit", async (event) => {
@@ -2472,6 +2884,7 @@ document.getElementById("download-repaired-notebook").addEventListener("click", 
       executionNotebookSelect.add(correctedOption);
     }
     correctedOption.textContent = "Approved corrected notebook";
+    updateVerificationButtonState();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;

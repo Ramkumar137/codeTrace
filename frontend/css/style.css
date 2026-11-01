@@ -1649,6 +1649,123 @@ main {
   font-size: 0.79rem;
 }
 
+.verification-card {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.verification-card select {
+  width: 100%;
+}
+
+.verification-results {
+  display: grid;
+  gap: 16px;
+}
+
+.verification-report {
+  display: grid;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.verification-finding,
+.verification-comparison {
+  min-width: 0;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.verification-finding h4,
+.verification-comparison h4 {
+  margin: 0 0 9px;
+}
+
+.verification-status {
+  display: inline-flex;
+  margin-bottom: 8px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  color: #475467;
+  background: #eef1f5;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.verification-status[data-status="verified"] {
+  color: #12643a;
+  background: #e5f5ec;
+}
+
+.verification-status[data-status="partially_verified"],
+.verification-status[data-status="inconclusive"] {
+  color: #805600;
+  background: #fff3d4;
+}
+
+.verification-status[data-status="not_verified"],
+.verification-status[data-status="execution_failed"] {
+  color: #9c2d2d;
+  background: #fde9e7;
+}
+
+.verification-status[data-status="not_applicable"] {
+  color: #586579;
+  background: #eef1f5;
+}
+
+.verification-cell-links,
+.verification-finding .finding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.verification-list {
+  margin: 6px 0 12px;
+  padding-left: 22px;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+
+.verification-comparable {
+  color: #12643a;
+}
+
+.verification-incomparable {
+  color: #805600;
+}
+
+.verification-metrics {
+  width: 100%;
+  margin: 10px 0;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.verification-metrics th,
+.verification-metrics td {
+  padding: 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.verification-metrics th {
+  background: var(--surface-muted);
+}
+
+@media (max-width: 640px) {
+  .verification-metrics {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
 .graph-detail-list dt {
   color: var(--text-muted);
   font-weight: 550;

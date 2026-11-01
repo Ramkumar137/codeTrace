@@ -776,3 +776,64 @@ Mocked tests cover unavailable status, container isolation settings, timeout/can
 - Docker isolation is a defense-in-depth boundary, not a guarantee against container-runtime or kernel vulnerabilities. This local setup is not hardened for multi-tenant deployment.
 - The execution runner has no network and does not install notebook requirements automatically; packages must be deliberately baked into a locally built runner image.
 - Phase 5 captures execution only. It does not decide whether a repair succeeded or compare original/corrected metrics.
+
+## Phase 6 – Repair Verification and Experiment Comparison
+
+### Completed work
+
+- Added persistence for approved repair/finding manifests associated with separately stored corrected notebooks and append-only verification reports.
+- Added evidence-based per-finding verification using the stored original/corrected notebook versions and explicitly selected execution records. Verification does not execute notebooks and does not equate successful execution with a successful repair.
+- Added bounded category-specific source checks for supported preprocessing, direct target-column, evaluation, and group-aware overlap patterns. Unsupported or insufficient evidence is reported with limitations rather than treated as success.
+- Added extraction of explicitly labeled metrics from captured execution output and conservative comparability checks. Metric values and performance comparison remain separate from repair verification.
+- Added a Verification workspace for selecting saved runs, starting verification, and reviewing finding evidence, statuses, cell references, risks, limitations, and experiment comparison.
+- Updated README and stale UI descriptions to distinguish static analysis, explicit Docker execution, and repair verification.
+
+### Files created
+
+| Path | Purpose |
+|---|---|
+| `backend/app/models/verification.py` | Defines the verification request model. |
+| `backend/app/services/verification_engine.py` | Evaluates findings from approved repairs and saved executions; extracts labeled metrics and evaluates comparability. |
+| `tests/test_verification.py` | Tests verification statuses, category evidence, metric comparison, persistence, execution association, and authorization with controlled fixtures. |
+
+### Files modified
+
+| Path | Change |
+|---|---|
+| `backend/app/main.py` | Persists approved repair context and exposes execution-history and verification APIs. |
+| `backend/app/services/execution_store.py` | Persists approved repair manifests and immutable verification records. |
+| `frontend/index.html` | Adds the Verification workspace and clarifies explicit execution/verification workflow text. |
+| `frontend/js/app.js` | Loads saved runs, requests and renders verification and comparison results, and links supported evidence to existing views. |
+| `frontend/css/style.css` | Styles verification statuses, evidence, and comparison content within the existing theme. |
+| `README.md` | Documents verification architecture, checks, statuses, APIs, metric comparison, and limitations; corrects Phase 6 feature status. |
+| `completion.md` | Records this phase and its actual verification results. |
+
+### APIs
+
+- `GET /api/notebooks/{notebook_id}/executions`
+- `POST /api/notebooks/{notebook_id}/verifications`
+- `GET /api/notebooks/{notebook_id}/verifications`
+- `GET /api/verifications/{verification_id}`
+- `GET /api/verifications/{verification_id}/findings/{finding_id}`
+- `GET /api/verifications/{verification_id}/comparison`
+
+### Dependencies
+
+No dependencies were added or changed.
+
+### Commands executed and actual results
+
+| Command/check | Result |
+|---|---|
+| `.\venv\Scripts\python.exe -m pytest tests\ -q` | **139 passed, 0 failed**; one existing Starlette/AnyIO deprecation warning. |
+| `node --check frontend\js\app.js` | Passed. |
+| `.\venv\Scripts\python.exe -m compileall -q backend\app\main.py backend\app\models\verification.py backend\app\services\execution_store.py backend\app\services\verification_engine.py tests\test_verification.py` | Passed. |
+| `git diff --check` | Passed. |
+| Pylance diagnostics for `verification_engine.py`, `main.py`, and `test_verification.py` | No diagnostics. |
+
+### Scope limitations
+
+- Verification is bounded by the implemented source patterns and recorded execution evidence; it does not prove that all leakage is absent.
+- Group-aware split syntax is only partial evidence; post-repair dataset overlap is not recomputed.
+- Metric extraction requires explicit labels in captured output. Metric deltas are withheld when the stored runs do not establish comparable data and configuration.
+- No browser end-to-end verification session or Phase 7 report-generation functionality was completed.

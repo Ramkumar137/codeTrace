@@ -101,6 +101,35 @@ class ExecutionStore:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS corrected_repairs (
+                corrected_notebook_id TEXT NOT NULL
+                    REFERENCES notebooks(notebook_id),
+                repair_id TEXT NOT NULL,
+                manifest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (corrected_notebook_id, repair_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS verifications (
+                verification_id TEXT PRIMARY KEY,
+                original_notebook_id TEXT NOT NULL
+                    REFERENCES notebooks(notebook_id),
+                corrected_notebook_id TEXT NOT NULL
+                    REFERENCES notebooks(notebook_id),
+                original_execution_id TEXT NOT NULL
+                    REFERENCES executions(execution_id),
+                corrected_execution_id TEXT NOT NULL
+                    REFERENCES executions(execution_id),
+                result TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         connection.commit()
         try:
             yield connection
@@ -152,6 +181,7 @@ class ExecutionStore:
         original: dict[str, Any],
         filename: str,
         content: bytes,
+        approved_repairs: list[dict[str, Any]] | None = None,
     ) -> str:
         notebook_id = str(uuid.uuid4())
         with self._connect() as connection:
@@ -171,7 +201,43 @@ class ExecutionStore:
                     _now(),
                 ),
             )
+            for repair_manifest in approved_repairs or []:
+                repair = repair_manifest["repair"]
+                connection.execute(
+                    """
+                    INSERT INTO corrected_repairs
+                        (corrected_notebook_id, repair_id, manifest, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        notebook_id,
+                        repair["repair_id"],
+                        json.dumps(repair_manifest),
+                        _now(),
+                    ),
+                )
         return notebook_id
+
+    def get_approved_repairs(
+        self, corrected_notebook_id: str, access_token: str
+    ) -> list[dict[str, Any]] | None:
+        notebook = self.get_notebook(corrected_notebook_id, access_token)
+        if (
+            notebook is None
+            or notebook["notebook_type"] != "corrected"
+            or not notebook["approved"]
+        ):
+            return None
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT manifest FROM corrected_repairs
+                WHERE corrected_notebook_id = ?
+                ORDER BY created_at, repair_id
+                """,
+                (corrected_notebook_id,),
+            ).fetchall()
+        return [json.loads(row["manifest"]) for row in rows]
 
     def add_dataset(
         self, notebook_id: str, filename: str, content: bytes
@@ -326,6 +392,10 @@ class ExecutionStore:
             row["access_token_hash"], _access_hash(access_token)
         ):
             return None
+        return self._decode_execution(row)
+
+    @staticmethod
+    def _decode_execution(row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
         del result["access_token_hash"]
         for key in (
@@ -342,6 +412,99 @@ class ExecutionStore:
         result["artifact_available"] = result["artifact"] is not None
         result.pop("artifact", None)
         return result
+
+    def list_executions(
+        self, notebook_id: str, access_token: str
+    ) -> list[dict[str, Any]] | None:
+        notebook = self.get_notebook(notebook_id, access_token)
+        if notebook is None:
+            return None
+        original_notebook_id = (
+            notebook["original_notebook_id"]
+            if notebook["notebook_type"] == "corrected"
+            else notebook_id
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.*, n.access_token_hash,
+                       n.filename AS notebook_filename, n.notebook_type
+                FROM executions e
+                JOIN notebooks n ON n.notebook_id = e.notebook_id
+                WHERE n.notebook_id = ? OR n.original_notebook_id = ?
+                ORDER BY e.created_at DESC
+                """,
+                (original_notebook_id, original_notebook_id),
+            ).fetchall()
+        token_hash = _access_hash(access_token)
+        return [
+            self._decode_execution(row)
+            for row in rows
+            if hmac.compare_digest(row["access_token_hash"], token_hash)
+        ]
+
+    def create_verification(self, result: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO verifications
+                    (verification_id, original_notebook_id,
+                     corrected_notebook_id, original_execution_id,
+                     corrected_execution_id, result, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result["verification_id"],
+                    result["original_notebook_id"],
+                    result["corrected_notebook_id"],
+                    result["original_execution_id"],
+                    result["corrected_execution_id"],
+                    json.dumps(result),
+                    result["verified_at"],
+                ),
+            )
+
+    def get_verification(
+        self, verification_id: str, access_token: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT v.result, n.access_token_hash
+                FROM verifications v
+                JOIN notebooks n
+                  ON n.notebook_id = v.original_notebook_id
+                WHERE v.verification_id = ?
+                """,
+                (verification_id,),
+            ).fetchone()
+        if row is None or not hmac.compare_digest(
+            row["access_token_hash"], _access_hash(access_token)
+        ):
+            return None
+        return json.loads(row["result"])
+
+    def list_verifications(
+        self, notebook_id: str, access_token: str
+    ) -> list[dict[str, Any]] | None:
+        notebook = self.get_notebook(notebook_id, access_token)
+        if notebook is None:
+            return None
+        original_notebook_id = (
+            notebook["original_notebook_id"]
+            if notebook["notebook_type"] == "corrected"
+            else notebook_id
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT result FROM verifications
+                WHERE original_notebook_id = ?
+                ORDER BY created_at DESC
+                """,
+                (original_notebook_id,),
+            ).fetchall()
+        return [json.loads(row["result"]) for row in rows]
 
     def get_artifact(self, execution_id: str, access_token: str) -> bytes | None:
         with self._connect() as connection:

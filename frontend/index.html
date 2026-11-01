@@ -40,7 +40,7 @@
           <h1 class="page-title" id="page-heading">Inspect a Jupyter Notebook</h1>
           <p class="page-description">
             Upload an .ipynb file to inspect its structure, pipeline, and evaluation risks.
-            Notebook code is parsed as text and never executed.
+            Analysis never executes notebook code; isolated execution is available only through an explicit experiment request.
           </p>
         </section>
 
@@ -70,6 +70,7 @@
           <a href="#audit" data-workspace-route="audit">Leakage &amp; Evaluation Audit</a>
           <a href="#repairs" data-workspace-route="repairs">Repair Center</a>
           <a href="#execution" data-workspace-route="execution">Experiments</a>
+          <a href="#verification" data-workspace-route="verification">Verification</a>
           <a href="#cells" data-workspace-route="cells">Cell Explorer</a>
           <a href="#evidence" data-workspace-route="evidence">Evidence Report</a>
         </nav>
@@ -87,6 +88,7 @@
             <a class="feature-link" href="#audit">Leakage &amp; Evaluation Audit</a>
             <a class="feature-link" href="#repairs">Repair Center</a>
             <a class="feature-link" href="#execution">Experiments</a>
+            <a class="feature-link" href="#verification">Verification & comparison</a>
             <a class="feature-link" href="#cells">Cell Explorer</a>
             <a class="feature-link" href="#evidence">Evidence Report</a>
           </nav>
@@ -166,7 +168,7 @@
           <p class="caveat-note" id="overview-limitations"></p>
           <section class="notebook-preview" aria-labelledby="notebook-preview-heading">
             <h3 id="notebook-preview-heading">Notebook contents</h3>
-            <p class="card-note">All cells in notebook order. Source is shown as text and is never executed.</p>
+            <p class="card-note">All cells in notebook order. Source is displayed as text; code runs only in explicitly started isolated experiments.</p>
             <ol id="overview-notebook-cells" class="notebook-cell-list"></ol>
           </section>
         </section>
@@ -310,7 +312,7 @@
             <button class="btn" id="download-repaired-notebook" type="button" disabled>Generate corrected notebook</button>
             <p class="upload-message hidden" id="repair-download-message" role="status" aria-live="polite"></p>
           </div>
-          <p class="caveat-note">Python syntax and structural validation do not prove semantic correctness. CodeTrace does not execute the notebook or claim experiment verification.</p>
+          <p class="caveat-note">Python syntax and structural validation do not prove semantic correctness. Experiment execution is separate; repair verification is available only after explicit original and corrected runs.</p>
         </section>
 
         <section class="workspace-section workspace-page hidden" id="execution-section" data-workspace-page="execution" aria-labelledby="execution-heading">
@@ -358,6 +360,23 @@
           </form>
         </section>
 
+        <section class="workspace-section workspace-page hidden" id="verification-section" data-workspace-page="verification" aria-labelledby="verification-heading">
+          <h2 id="verification-heading">Repair Verification & Experiment Comparison</h2>
+          <p class="section-description">Verify approved repairs against saved original and corrected execution records. This view never starts or repeats an experiment. Repair verification and model metric comparison are reported separately.</p>
+          <div class="workspace-card verification-card">
+            <h3>Select completed experiments</h3>
+            <p class="card-note">Run the original and approved corrected notebook separately in Experiments first. Only records for these exact notebook versions can be selected.</p>
+            <button class="btn" id="load-verification-executions" type="button">Load saved experiments</button>
+            <label class="upload-label" for="verification-original-execution">Original notebook execution</label>
+            <select id="verification-original-execution" class="graph-filter-select"></select>
+            <label class="upload-label" for="verification-corrected-execution">Corrected notebook execution</label>
+            <select id="verification-corrected-execution" class="graph-filter-select"></select>
+            <button class="btn" id="start-verification" type="button" disabled>Verify approved repairs</button>
+            <p id="verification-status-message" class="graph-status" role="status" aria-live="polite"></p>
+          </div>
+          <div id="verification-results" class="verification-results" aria-live="polite"></div>
+        </section>
+
         <section class="workspace-section workspace-page hidden" id="cells-section" data-workspace-page="cells">
           <h2>Cell Explorer</h2>
           <label class="upload-label" for="cell-selector">Select a notebook cell</label>
@@ -390,7 +409,7 @@
         </section>
         <section class="about-section">
           <h2>Interpret with care</h2>
-          <p>Static analysis cannot establish every runtime fact. Variable names and source order may not reflect actual data contents or execution order; dynamic code, aliases, hidden state, and dataset contents may be outside the analyzer’s reach. CodeTrace does not load referenced paths or URLs, execute notebook cells, or prove that a dataset was loaded or a model was trained.</p>
+          <p>Static analysis cannot establish every runtime fact. Variable names and source order may not reflect actual data contents or execution order; dynamic code, aliases, hidden state, and dataset contents may be outside the analyzer’s reach. CodeTrace never loads notebook-referenced paths or URLs during analysis. Notebook cells run only after an explicit request in Experiments, inside Docker isolation; execution success does not prove a repair is correct or a model trustworthy.</p>
         </section>
         <a class="btn about-action" href="#inspect">Inspect a notebook</a>
       </div>

@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.models.dataset import DatasetAnalysisResponse
 from backend.app.models.execution import ExecutionRequest, ExecutionStatusResponse
 from backend.app.models.notebook import NotebookUploadResponse
+from backend.app.models.verification import VerificationRequest
 from backend.app.services.dataset_analyzer import (
     DatasetAnalysisError,
     analyze_csv_dataset,
@@ -38,6 +39,7 @@ from backend.app.services.execution_manager import (
     ExecutionRequestError,
 )
 from backend.app.services.execution_store import ExecutionStore
+from backend.app.services.verification_engine import build_verification
 
 
 DEFAULT_MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
@@ -70,7 +72,7 @@ app = FastAPI(
     title="CodeTrace API",
     description=(
         "Validates and analyzes notebooks, and supports explicitly requested "
-        "Docker-isolated notebook experiments."
+        "Docker-isolated notebook experiments with evidence-based repair verification."
     ),
     version="0.1.0",
 )
@@ -347,7 +349,7 @@ async def generate_notebook_repairs(
             )
 
         try:
-            parse_notebook(filename, content)
+            parsed_notebook = parse_notebook(filename, content)
             corrected_content, corrected_filename = generate_corrected_notebook(
                 content, filename, selected_ids
             )
@@ -368,8 +370,26 @@ async def generate_notebook_repairs(
             )
         }
         if original_record is not None:
+            repairs_by_id = {
+                repair["repair_id"]: repair
+                for repair in parsed_notebook["analysis"]["repairs"]
+            }
+            findings_by_id = {
+                finding["id"]: finding
+                for finding in parsed_notebook["analysis"]["findings"]
+            }
+            approved_repairs = [
+                {
+                    "repair": repairs_by_id[repair_id],
+                    "finding": findings_by_id[repairs_by_id[repair_id]["finding_id"]],
+                }
+                for repair_id in selected_ids
+            ]
             corrected_id = _get_execution_store().create_corrected_notebook(
-                original_record, corrected_filename, corrected_content
+                original_record,
+                corrected_filename,
+                corrected_content,
+                approved_repairs,
             )
             response_headers["X-CodeTrace-Notebook-ID"] = corrected_id
 
@@ -542,6 +562,244 @@ async def get_notebook_execution(
             },
         )
     return execution
+
+
+@app.get(
+    "/api/notebooks/{notebook_id}/executions",
+    tags=["executions"],
+)
+async def list_notebook_executions(
+    notebook_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """List saved original/corrected runs without starting new experiments."""
+    token = _require_access_token(authorization)
+    executions = _get_execution_store().list_executions(notebook_id, token)
+    if executions is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_not_found",
+                "message": "The notebook was not found or is not accessible.",
+            },
+        )
+    return {"executions": executions}
+
+
+@app.post(
+    "/api/notebooks/{notebook_id}/verifications",
+    tags=["verification"],
+)
+async def verify_notebook_repairs(
+    notebook_id: str,
+    request: VerificationRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Verify approved corrections using existing execution records only."""
+    token = _require_access_token(authorization)
+    store = _get_execution_store()
+    original_record = store.get_notebook_for_repair(notebook_id, token)
+    if original_record is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_not_found",
+                "message": "The original notebook was not found or is not accessible.",
+            },
+        )
+    corrected_record = store.get_notebook(
+        request.corrected_notebook_id, token
+    )
+    if (
+        corrected_record is None
+        or corrected_record["notebook_type"] != "corrected"
+        or corrected_record["original_notebook_id"] != notebook_id
+        or not corrected_record["approved"]
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "corrected_notebook_mismatch",
+                "message": "The corrected notebook is not an approved version of this original.",
+            },
+        )
+    approved_repairs = store.get_approved_repairs(
+        request.corrected_notebook_id, token
+    )
+    if not approved_repairs:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "approved_repairs_unavailable",
+                "message": "No persisted approved repair evidence is associated with this corrected notebook.",
+            },
+        )
+
+    original_execution = store.get_execution(request.original_execution_id, token)
+    corrected_execution = store.get_execution(request.corrected_execution_id, token)
+    if original_execution is None or corrected_execution is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "execution_not_found",
+                "message": "One or both execution records were not found or are not accessible.",
+            },
+        )
+    if (
+        original_execution["notebook_id"] != notebook_id
+        or original_execution["notebook_type"] != "original"
+        or corrected_execution["notebook_id"] != request.corrected_notebook_id
+        or corrected_execution["notebook_type"] != "corrected"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "execution_notebook_mismatch",
+                "message": "Execution records must belong to the selected original and corrected notebook versions.",
+            },
+        )
+    if any(
+        execution["status"] in {"queued", "running"}
+        for execution in (original_execution, corrected_execution)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "execution_not_complete",
+                "message": "Wait until both selected executions reach a terminal status before verification.",
+            },
+        )
+
+    try:
+        original_analysis = parse_notebook(
+            original_record["filename"], bytes(original_record["content"])
+        )
+        corrected_analysis = parse_notebook(
+            corrected_record["filename"], bytes(corrected_record["content"])
+        )
+        result = build_verification(
+            original_notebook={
+                **original_analysis,
+                "notebook_id": notebook_id,
+            },
+            corrected_notebook={
+                **corrected_analysis,
+                "notebook_id": request.corrected_notebook_id,
+            },
+            approved_repairs=approved_repairs,
+            original_execution=original_execution,
+            corrected_execution=corrected_execution,
+            selected_repair_ids=request.repair_ids,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_verification_request",
+                "message": str(error),
+            },
+        ) from error
+    store.create_verification(result)
+    return result
+
+
+@app.get(
+    "/api/notebooks/{notebook_id}/verifications",
+    tags=["verification"],
+)
+async def list_notebook_verifications(
+    notebook_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """List immutable verification audit records for an authorized notebook."""
+    token = _require_access_token(authorization)
+    verifications = _get_execution_store().list_verifications(notebook_id, token)
+    if verifications is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_not_found",
+                "message": "The notebook was not found or is not accessible.",
+            },
+        )
+    return {"verifications": verifications}
+
+
+@app.get("/api/verifications/{verification_id}", tags=["verification"])
+async def get_verification(
+    verification_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    result = _get_execution_store().get_verification(verification_id, token)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "verification_not_found",
+                "message": "The verification was not found or is not accessible.",
+            },
+        )
+    return result
+
+
+@app.get(
+    "/api/verifications/{verification_id}/findings/{finding_id}",
+    tags=["verification"],
+)
+async def get_finding_verification(
+    verification_id: str,
+    finding_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    result = _get_execution_store().get_verification(verification_id, token)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "verification_not_found",
+                "message": "The verification was not found or is not accessible.",
+            },
+        )
+    finding_result = next(
+        (
+            item
+            for item in result["findings"]
+            if item["finding_id"] == finding_id
+        ),
+        None,
+    )
+    if finding_result is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "finding_verification_not_found",
+                "message": "The finding is not included in this verification record.",
+            },
+        )
+    return finding_result
+
+
+@app.get(
+    "/api/verifications/{verification_id}/comparison",
+    tags=["verification"],
+)
+async def get_verification_comparison(
+    verification_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    result = _get_execution_store().get_verification(verification_id, token)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "verification_not_found",
+                "message": "The verification was not found or is not accessible.",
+            },
+        )
+    return result["comparison"]
 
 
 @app.get("/api/executions/{execution_id}/notebook", tags=["executions"])
