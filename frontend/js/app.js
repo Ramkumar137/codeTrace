@@ -2,7 +2,7 @@
  * CodeTrace notebook upload and API-health indicator.
  */
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL = "https://codetrace-w4fm.onrender.com";
 const HEALTH_CHECK_INTERVAL_MS = 15_000;
 const GENERIC_UPLOAD_ERROR = "Something went wrong. Please try again later.";
 const healthIndicator = document.getElementById("api-health-indicator");
