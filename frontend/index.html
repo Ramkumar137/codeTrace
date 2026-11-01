@@ -72,7 +72,7 @@
           <a href="#execution" data-workspace-route="execution">Experiments</a>
           <a href="#verification" data-workspace-route="verification">Verification</a>
           <a href="#cells" data-workspace-route="cells">Cell Explorer</a>
-          <a href="#evidence" data-workspace-route="evidence">Evidence Report</a>
+          <a href="#evidence" data-workspace-route="evidence">Reports</a>
         </nav>
 
         <section class="workspace-section workspace-page summary-page" id="notebook-summary" data-workspace-page="summary" aria-labelledby="summary-heading">
@@ -90,7 +90,7 @@
             <a class="feature-link" href="#execution">Experiments</a>
             <a class="feature-link" href="#verification">Verification & comparison</a>
             <a class="feature-link" href="#cells">Cell Explorer</a>
-            <a class="feature-link" href="#evidence">Evidence Report</a>
+            <a class="feature-link" href="#evidence">Evidence Reports</a>
           </nav>
           <div class="summary-footer">
             <p class="section-description">Choose a section above to review the notebook inspection results.</p>
@@ -386,10 +386,24 @@
         </section>
 
         <section class="workspace-section workspace-page hidden" id="evidence-section" data-workspace-page="evidence">
-          <h2>Evidence Report</h2>
-          <p class="section-description">Download a JSON report containing this parse, supported findings, source references, confidence definitions, and limitations.</p>
-          <button class="btn" id="download-report" type="button">Download evidence report</button>
-          <p class="caveat-note">Confidence describes source-pattern support only; it is not a probability that a real-world issue occurred.</p>
+          <h2>Evidence Reports</h2>
+          <p class="section-description">Generate a report snapshot from saved notebook analysis, approved repairs, experiment records, and verification evidence. Report generation never executes a notebook.</p>
+          <div class="report-controls">
+            <button class="btn" id="generate-report" type="button">Generate report</button>
+            <button class="btn" id="load-reports" type="button">Load saved reports</button>
+          </div>
+          <p id="report-status" class="graph-status" role="status" aria-live="polite"></p>
+          <div id="report-list" class="report-list" aria-live="polite"></div>
+          <section class="workspace-card report-artifacts">
+            <h3>Available notebook artifacts</h3>
+            <p class="card-note">Only persisted original, corrected, and executed notebook files are listed.</p>
+            <div id="report-artifact-list" class="report-artifact-list"></div>
+          </section>
+          <section class="workspace-card report-preview hidden" id="report-preview-container">
+            <h3>HTML report preview</h3>
+            <iframe id="report-preview" title="CodeTrace evidence report preview" sandbox=""></iframe>
+          </section>
+          <p class="caveat-note">Static findings remain source-based inferences. Execution, verification, and comparison sections are explicitly marked unavailable when no corresponding saved records exist.</p>
         </section>
       </section>
     </div>
@@ -404,7 +418,7 @@
         </section>
         <section class="about-section">
           <h2>Trace, audit, and review</h2>
-          <p>The pipeline trace is a compact, X-Ray-inspired view of the workflow that can be supported by static source. The audit flags a limited set of recognizable patterns, with evidence, confidence definitions, and practical review guidance. The evidence report preserves those findings and their source references for reproducibility and discussion.</p>
+          <p>The pipeline trace is a compact, X-Ray-inspired view of the workflow that can be supported by static source. The audit flags a limited set of recognizable patterns, with evidence, confidence definitions, and practical review guidance. Evidence reports preserve the available findings, repair records, executions, verification results, comparisons, and limitations.</p>
           <p>Current checks are deliberately narrow: they can flag test-named variables passed to fitting, training-named variables passed to evaluation, and common preprocessing fits that appear before a later split. A flagged pattern is a potential risk, not a confirmed defect.</p>
         </section>
         <section class="about-section">

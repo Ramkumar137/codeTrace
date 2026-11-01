@@ -43,6 +43,13 @@ const verificationCorrectedExecution = document.getElementById("verification-cor
 const startVerificationButton = document.getElementById("start-verification");
 const verificationStatusMessage = document.getElementById("verification-status-message");
 const verificationResults = document.getElementById("verification-results");
+const generateReportButton = document.getElementById("generate-report");
+const loadReportsButton = document.getElementById("load-reports");
+const reportStatusMessage = document.getElementById("report-status");
+const reportList = document.getElementById("report-list");
+const reportArtifactList = document.getElementById("report-artifact-list");
+const reportPreviewContainer = document.getElementById("report-preview-container");
+const reportPreview = document.getElementById("report-preview");
 const overlapForm = document.getElementById("overlap-form");
 const overlapTrainFile = document.getElementById("overlap-train-file");
 const overlapTestFile = document.getElementById("overlap-test-file");
@@ -341,6 +348,11 @@ uploadForm.addEventListener("submit", async (event) => {
     verificationCorrectedExecution.replaceChildren(new Option("Select an execution", ""));
     verificationResults.replaceChildren();
     showVerificationStatus("", "hidden");
+    reportList.replaceChildren();
+    reportArtifactList.replaceChildren();
+    reportPreview.srcdoc = "";
+    reportPreviewContainer.classList.add("hidden");
+    showReportStatus("", "hidden");
     executionDatasetSelect.replaceChildren();
     executionDatasetList.replaceChildren();
     executionNotebookSelect.replaceChildren(
@@ -385,6 +397,11 @@ document.getElementById("choose-another-notebook").addEventListener("click", () 
   verificationCorrectedExecution.replaceChildren(new Option("Select an execution", ""));
   verificationResults.replaceChildren();
   showVerificationStatus("", "hidden");
+  reportList.replaceChildren();
+  reportArtifactList.replaceChildren();
+  reportPreview.srcdoc = "";
+  reportPreviewContainer.classList.add("hidden");
+  showReportStatus("", "hidden");
   executionDatasetList.replaceChildren();
   executionDatasetSelect.replaceChildren();
   executionDatasetForm.reset();
@@ -2933,26 +2950,246 @@ function selectCell(index) {
   cellSource.textContent = cell.source;
 }
 
-document.getElementById("download-report").addEventListener("click", () => {
-  if (!currentNotebook || !currentNotebook.analysis) {
+generateReportButton.addEventListener("click", async () => {
+  if (!currentNotebookId || !currentNotebookToken) {
+    showReportStatus("Upload a notebook before generating its report.", "error");
     return;
   }
-  const report = {
-    notebook: currentNotebook,
-    findings: getCurrentFindings(),
-    pipeline_trace: currentNotebook.analysis.pipeline_trace,
-    confidence_definitions: currentNotebook.analysis.confidence_definitions,
-    severity_definitions: currentNotebook.analysis.severity_definitions,
-    limitations: currentNotebook.analysis.limitations
-  };
-  const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  const safeName = currentNotebook.filename.replace(/[^a-z0-9._-]/gi, "_");
-  link.href = url;
-  link.download = `${safeName}.evidence.json`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  generateReportButton.disabled = true;
+  generateReportButton.textContent = "Generating…";
+  showReportStatus("Collecting saved analysis and workflow records…", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/reports`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${currentNotebookToken}` }
+      }
+    );
+    const report = await response.json();
+    if (!response.ok) {
+      throw new Error(report?.detail?.message || "The report could not be generated.");
+    }
+    renderReportCard(report);
+    showReportStatus(
+      `Report ${report.report_id} saved · ${new Date(report.generated_at).toLocaleString()} · ` +
+      `${report.status === "completed" ? "Completed" : "Partially available"}.`,
+      report.status === "completed" ? "success" : "loading"
+    );
+    await loadReportArtifacts();
+  } catch (error) {
+    showReportStatus(
+      error instanceof Error ? error.message : "The report could not be generated.",
+      "error"
+    );
+  } finally {
+    generateReportButton.disabled = false;
+    generateReportButton.textContent = "Generate report";
+  }
 });
+
+loadReportsButton.addEventListener("click", async () => {
+  await loadSavedReports();
+  await loadReportArtifacts();
+});
+
+reportList.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-report-action]");
+  if (!button || !currentNotebookToken) {
+    return;
+  }
+  const reportId = button.dataset.reportId;
+  const action = button.dataset.reportAction;
+  const format = action === "preview" ? "html" : action;
+  const url = `${API_BASE_URL}/api/reports/${encodeURIComponent(reportId)}/${format}`;
+  if (action === "preview") {
+    button.disabled = true;
+    showReportStatus("Loading the saved HTML report preview…", "loading");
+    try {
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${currentNotebookToken}` },
+        cache: "no-store"
+      });
+      if (!response.ok) {
+        throw new Error("The HTML report preview is unavailable.");
+      }
+      reportPreview.srcdoc = await response.text();
+      reportPreviewContainer.classList.remove("hidden");
+      showReportStatus(`Previewing report ${reportId}.`, "success");
+    } catch (error) {
+      showReportStatus(
+        error instanceof Error ? error.message : "The HTML report preview is unavailable.",
+        "error"
+      );
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
+  const extension = action === "json" ? "evidence.json" : `evidence.${action}`;
+  await downloadAuthorizedArtifact(url, `${reportId}.${extension}`);
+});
+
+reportArtifactList.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-artifact-url]");
+  if (!button || !currentNotebookToken) {
+    return;
+  }
+  await downloadAuthorizedArtifact(
+    `${API_BASE_URL}${button.dataset.artifactUrl}`,
+    button.dataset.filename || "codetrace-artifact.ipynb"
+  );
+});
+
+async function loadSavedReports() {
+  if (!currentNotebookId || !currentNotebookToken) {
+    showReportStatus("Upload a notebook before loading its reports.", "error");
+    return;
+  }
+  loadReportsButton.disabled = true;
+  showReportStatus("Loading saved report records…", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/reports`,
+      { headers: { Authorization: `Bearer ${currentNotebookToken}` } }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "Saved reports could not be loaded.");
+    }
+    reportList.replaceChildren();
+    (data.reports || []).slice().reverse().forEach(renderReportCard);
+    showReportStatus(
+      `${data.reports?.length || 0} saved report(s) for ${currentNotebook.filename}.`,
+      "success"
+    );
+  } catch (error) {
+    showReportStatus(
+      error instanceof Error ? error.message : "Saved reports could not be loaded.",
+      "error"
+    );
+  } finally {
+    loadReportsButton.disabled = false;
+  }
+}
+
+function renderReportCard(report) {
+  const article = document.createElement("article");
+  article.className = "workspace-card report-card";
+  article.dataset.reportId = report.report_id;
+  const heading = document.createElement("h3");
+  heading.textContent = `Report · ${report.report_id}`;
+  article.appendChild(heading);
+  const details = document.createElement("p");
+  const notebookName = report.overview?.notebook_name || currentNotebook?.filename || "Notebook";
+  const generatedAt = report.generated_at
+    ? new Date(report.generated_at).toLocaleString()
+    : "timestamp unavailable";
+  const state = report.status === "completed" ? "Completed" : "Partially available";
+  details.textContent = `${notebookName} · ${generatedAt} · ${state}`;
+  article.appendChild(details);
+  const actions = document.createElement("div");
+  actions.className = "report-actions";
+  [
+    ["preview", "Preview HTML"],
+    ["pdf", "Download PDF"],
+    ["html", "Download HTML"],
+    ["json", "Download JSON"]
+  ].forEach(([action, label]) => {
+    const button = document.createElement("button");
+    button.className = "btn";
+    button.type = "button";
+    button.dataset.reportAction = action;
+    button.dataset.reportId = report.report_id;
+    button.textContent = label;
+    actions.appendChild(button);
+  });
+  article.appendChild(actions);
+  reportList.prepend(article);
+}
+
+async function loadReportArtifacts() {
+  if (!currentNotebookId || !currentNotebookToken) {
+    return;
+  }
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/artifacts`,
+      { headers: { Authorization: `Bearer ${currentNotebookToken}` } }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "Notebook artifacts could not be loaded.");
+    }
+    reportArtifactList.replaceChildren();
+    const artifacts = [
+      ...(data.notebooks || []).map((item) => ({
+        ...item,
+        label: `${item.notebook_type === "original" ? "Original" : "Corrected"} notebook · ${item.filename}`
+      })),
+      ...(data.datasets || []).map((item) => ({
+        ...item,
+        label: `Associated dataset · ${item.filename}`
+      })),
+      ...(data.executed_notebooks || []).map((item) => ({
+        ...item,
+        label: `Executed notebook · ${item.filename} · ${item.execution_id.slice(0, 8)}`
+      }))
+    ];
+    if (!artifacts.length) {
+      reportArtifactList.textContent = "No notebook artifacts are available.";
+      return;
+    }
+    artifacts.forEach((artifact) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "text-button";
+      button.dataset.artifactUrl = artifact.download_path;
+      button.dataset.filename = artifact.filename;
+      button.textContent = `Download ${artifact.label}`;
+      reportArtifactList.appendChild(button);
+    });
+  } catch (error) {
+    reportArtifactList.textContent =
+      error instanceof Error ? error.message : "Notebook artifacts could not be loaded.";
+  }
+}
+
+async function downloadAuthorizedArtifact(url, filename) {
+  if (!currentNotebookToken) {
+    showReportStatus("The notebook access token is unavailable. Upload the notebook again.", "error");
+    return;
+  }
+  showReportStatus(`Preparing ${filename}…`, "loading");
+  try {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${currentNotebookToken}` },
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data?.detail?.message || `Download failed (${response.status}).`);
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename.replace(/[\\/:*?"<>|]/g, "_");
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    showReportStatus(`Downloaded ${filename}.`, "success");
+  } catch (error) {
+    showReportStatus(
+      error instanceof Error ? error.message : `Download failed for ${filename}.`,
+      "error"
+    );
+  }
+}
+
+function showReportStatus(message, state) {
+  reportStatusMessage.textContent = message;
+  reportStatusMessage.className =
+    state === "hidden" ? "graph-status hidden" : `graph-status ${state}`;
+}

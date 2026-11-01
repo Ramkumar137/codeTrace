@@ -130,6 +130,20 @@ class ExecutionStore:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reports (
+                report_id TEXT PRIMARY KEY,
+                notebook_id TEXT NOT NULL REFERENCES notebooks(notebook_id),
+                generated_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                report_data TEXT NOT NULL,
+                html_artifact BLOB NOT NULL,
+                pdf_artifact BLOB NOT NULL
+            )
+            """
+        )
         connection.commit()
         try:
             yield connection
@@ -505,6 +519,139 @@ class ExecutionStore:
                 (original_notebook_id,),
             ).fetchall()
         return [json.loads(row["result"]) for row in rows]
+
+    def list_notebook_versions(
+        self, notebook_id: str, access_token: str
+    ) -> list[dict[str, Any]] | None:
+        notebook = self.get_notebook(notebook_id, access_token)
+        if notebook is None:
+            return None
+        original_notebook_id = (
+            notebook["original_notebook_id"]
+            if notebook["notebook_type"] == "corrected"
+            else notebook_id
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT n.notebook_id, n.original_notebook_id, n.notebook_type,
+                       n.filename, n.content, n.access_token_hash,
+                       n.approved, n.created_at
+                FROM notebooks n
+                JOIN notebooks root
+                  ON root.notebook_id = n.notebook_id
+                  OR root.notebook_id = n.original_notebook_id
+                WHERE root.notebook_id = ?
+                ORDER BY n.created_at, n.notebook_id
+                """,
+                (original_notebook_id,),
+            ).fetchall()
+        token_hash = _access_hash(access_token)
+        result = []
+        for row in rows:
+            if not hmac.compare_digest(row["access_token_hash"], token_hash):
+                continue
+            item = dict(row)
+            item.pop("access_token_hash")
+            item["content"] = bytes(item["content"])
+            result.append(item)
+        return result
+
+    def get_notebook_artifact(
+        self,
+        original_notebook_id: str,
+        artifact_notebook_id: str,
+        access_token: str,
+    ) -> dict[str, Any] | None:
+        original = self.get_notebook(original_notebook_id, access_token)
+        artifact_notebook = self.get_notebook(artifact_notebook_id, access_token)
+        if (
+            original is None
+            or original["notebook_type"] != "original"
+            or artifact_notebook is None
+            or (
+                artifact_notebook_id != original_notebook_id
+                and artifact_notebook["original_notebook_id"] != original_notebook_id
+            )
+        ):
+            return None
+        return {
+            "notebook_id": artifact_notebook["notebook_id"],
+            "notebook_type": artifact_notebook["notebook_type"],
+            "filename": artifact_notebook["filename"],
+            "content": bytes(artifact_notebook["content"]),
+        }
+
+    def create_report(self, report: dict[str, Any], html_artifact: bytes, pdf_artifact: bytes) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO reports
+                    (report_id, notebook_id, generated_at, status, schema_version,
+                     report_data, html_artifact, pdf_artifact)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    report["report_id"],
+                    report["overview"]["notebook_id"],
+                    report["generated_at"],
+                    report["status"],
+                    report["schema_version"],
+                    json.dumps(report, ensure_ascii=False),
+                    html_artifact,
+                    pdf_artifact,
+                ),
+            )
+
+    def list_reports(
+        self, notebook_id: str, access_token: str
+    ) -> list[dict[str, Any]] | None:
+        notebook = self.get_notebook(notebook_id, access_token)
+        if notebook is None:
+            return None
+        original_notebook_id = (
+            notebook["original_notebook_id"]
+            if notebook["notebook_type"] == "corrected"
+            else notebook_id
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT report_id, notebook_id, generated_at, status, schema_version
+                FROM reports WHERE notebook_id = ?
+                ORDER BY generated_at DESC
+                """,
+                (original_notebook_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_report(
+        self, report_id: str, access_token: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT r.*, n.access_token_hash
+                FROM reports r
+                JOIN notebooks n ON n.notebook_id = r.notebook_id
+                WHERE r.report_id = ?
+                """,
+                (report_id,),
+            ).fetchone()
+        if row is None or not hmac.compare_digest(
+            row["access_token_hash"], _access_hash(access_token)
+        ):
+            return None
+        return {
+            "report_id": row["report_id"],
+            "notebook_id": row["notebook_id"],
+            "generated_at": row["generated_at"],
+            "status": row["status"],
+            "schema_version": row["schema_version"],
+            "report_data": json.loads(row["report_data"]),
+            "html_artifact": bytes(row["html_artifact"]),
+            "pdf_artifact": bytes(row["pdf_artifact"]),
+        }
 
     def get_artifact(self, execution_id: str, access_token: str) -> bytes | None:
         with self._connect() as connection:

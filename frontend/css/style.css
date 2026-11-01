@@ -1724,6 +1724,44 @@ main {
   gap: 8px 14px;
 }
 
+.report-controls,
+.report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.report-list,
+.report-artifact-list {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.report-card h3 {
+  margin-top: 0;
+  overflow-wrap: anywhere;
+}
+
+.report-card p {
+  color: var(--text-muted);
+}
+
+.report-artifacts,
+.report-preview {
+  margin-top: 18px;
+}
+
+.report-preview iframe {
+  display: block;
+  width: 100%;
+  min-height: 680px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+
 .verification-list {
   margin: 6px 0 12px;
   padding-left: 22px;

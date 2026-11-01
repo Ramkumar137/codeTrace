@@ -40,6 +40,10 @@ from backend.app.services.execution_manager import (
 )
 from backend.app.services.execution_store import ExecutionStore
 from backend.app.services.verification_engine import build_verification
+from backend.app.services.report_service import (
+    ReportGenerationError,
+    generate_report_artifacts,
+)
 
 
 DEFAULT_MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
@@ -723,6 +727,371 @@ async def list_notebook_verifications(
             },
         )
     return {"verifications": verifications}
+
+
+@app.post("/api/notebooks/{notebook_id}/reports", tags=["reports"])
+async def generate_notebook_report(
+    notebook_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """Generate an immutable report snapshot from saved notebook workflow records."""
+    token = _require_access_token(authorization)
+    store = _get_execution_store()
+    if store.get_notebook_for_repair(notebook_id, token) is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_not_found",
+                "message": "The original notebook was not found or is not accessible.",
+            },
+        )
+    try:
+        report, html_artifact, pdf_artifact = generate_report_artifacts(
+            store, notebook_id, token
+        )
+    except ReportGenerationError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "report_generation_failed",
+                "message": str(error),
+            },
+        ) from error
+    store.create_report(report, html_artifact, pdf_artifact)
+    return {
+        "report_id": report["report_id"],
+        "notebook_id": notebook_id,
+        "generated_at": report["generated_at"],
+        "status": report["status"],
+        "schema_version": report["schema_version"],
+        "formats": ["html", "pdf", "json"],
+        "overview": report["overview"],
+    }
+
+
+@app.get("/api/notebooks/{notebook_id}/reports", tags=["reports"])
+async def list_notebook_reports(
+    notebook_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """List report snapshots belonging to an authorized original notebook."""
+    token = _require_access_token(authorization)
+    reports = _get_execution_store().list_reports(notebook_id, token)
+    if reports is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_not_found",
+                "message": "The notebook was not found or is not accessible.",
+            },
+        )
+    return {"reports": reports}
+
+
+@app.get("/api/reports/{report_id}", tags=["reports"])
+async def get_report_metadata(
+    report_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    report = _get_execution_store().get_report(report_id, token)
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "report_not_found",
+                "message": "The report was not found or is not accessible.",
+            },
+        )
+    return {
+        "report_id": report["report_id"],
+        "notebook_id": report["notebook_id"],
+        "generated_at": report["generated_at"],
+        "status": report["status"],
+        "schema_version": report["schema_version"],
+        "overview": report["report_data"]["overview"],
+        "formats": ["html", "pdf", "json"],
+    }
+
+
+@app.get("/api/reports/{report_id}/html", tags=["reports"])
+async def preview_report_html(
+    report_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    report = _get_execution_store().get_report(report_id, token)
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "report_not_found",
+                "message": "The report was not found or is not accessible.",
+            },
+        )
+    return Response(
+        content=report["html_artifact"],
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:;",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": "inline; filename=\"codetrace-report.html\"",
+        },
+    )
+
+
+@app.get("/api/reports/{report_id}/json", tags=["reports"])
+async def download_report_json(
+    report_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    report = _get_execution_store().get_report(report_id, token)
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "report_not_found",
+                "message": "The report was not found or is not accessible.",
+            },
+        )
+    return Response(
+        content=json.dumps(
+            report["report_data"], ensure_ascii=False, indent=2
+        ).encode("utf-8"),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{report_id}.evidence.json\""
+            )
+        },
+    )
+
+
+@app.get("/api/reports/{report_id}/pdf", tags=["reports"])
+async def download_report_pdf(
+    report_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    report = _get_execution_store().get_report(report_id, token)
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "report_not_found",
+                "message": "The report was not found or is not accessible.",
+            },
+        )
+    return Response(
+        content=report["pdf_artifact"],
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{report_id}.evidence.pdf\""
+            )
+        },
+    )
+
+
+@app.get("/api/notebooks/{notebook_id}/artifacts", tags=["artifacts"])
+async def list_notebook_artifacts(
+    notebook_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """List stored notebook and executed-notebook artifacts without exposing content."""
+    token = _require_access_token(authorization)
+    store = _get_execution_store()
+    versions = store.list_notebook_versions(notebook_id, token)
+    if versions is None or not any(
+        item["notebook_id"] == notebook_id
+        and item["notebook_type"] == "original"
+        for item in versions
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_not_found",
+                "message": "The original notebook was not found or is not accessible.",
+            },
+        )
+    notebooks = [
+        {
+            "notebook_id": version["notebook_id"],
+            "notebook_type": version["notebook_type"],
+            "filename": version["filename"],
+            "created_at": version["created_at"],
+            "available": True,
+            "download_path": (
+                f"/api/notebooks/{notebook_id}/artifacts/notebooks/"
+                f"{version['notebook_id']}"
+            ),
+        }
+        for version in versions
+    ]
+    datasets = [
+        {
+            "dataset_id": dataset["dataset_id"],
+            "filename": dataset["filename"],
+            "created_at": dataset["created_at"],
+            "available": True,
+            "download_path": (
+                f"/api/notebooks/{notebook_id}/artifacts/datasets/"
+                f"{dataset['dataset_id']}"
+            ),
+        }
+        for dataset in store.list_datasets(notebook_id)
+    ]
+    executions = store.list_executions(notebook_id, token) or []
+    executed_notebooks = [
+        {
+            "execution_id": execution["execution_id"],
+            "notebook_id": execution["notebook_id"],
+            "filename": execution["notebook_filename"],
+            "available": True,
+            "download_path": (
+                f"/api/notebooks/{notebook_id}/artifacts/executions/"
+                f"{execution['execution_id']}"
+            ),
+        }
+        for execution in executions
+        if execution.get("artifact_available")
+    ]
+    return {
+        "notebooks": notebooks,
+        "datasets": datasets,
+        "executed_notebooks": executed_notebooks,
+    }
+
+
+@app.get(
+    "/api/notebooks/{notebook_id}/artifacts/notebooks/{artifact_notebook_id}",
+    tags=["artifacts"],
+)
+async def download_notebook_version(
+    notebook_id: str,
+    artifact_notebook_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    artifact = _get_execution_store().get_notebook_artifact(
+        notebook_id, artifact_notebook_id, token
+    )
+    if artifact is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "artifact_not_found",
+                "message": "The notebook artifact was not found or is not accessible.",
+            },
+        )
+    return Response(
+        content=artifact["content"],
+        media_type="application/x-ipynb+json",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(artifact['filename'])}"
+            )
+        },
+    )
+
+
+@app.get(
+    "/api/notebooks/{notebook_id}/artifacts/datasets/{dataset_id}",
+    tags=["artifacts"],
+)
+async def download_associated_dataset(
+    notebook_id: str,
+    dataset_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    store = _get_execution_store()
+    if store.get_notebook_for_repair(notebook_id, token) is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "artifact_not_found",
+                "message": "The dataset artifact was not found or is not accessible.",
+            },
+        )
+    datasets = store.get_datasets(notebook_id, [dataset_id])
+    if datasets is None or not datasets:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "artifact_not_found",
+                "message": "The dataset artifact was not found or is not accessible.",
+            },
+        )
+    dataset = datasets[0]
+    return Response(
+        content=dataset["content"],
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(dataset['filename'])}"
+            )
+        },
+    )
+
+
+@app.get(
+    "/api/notebooks/{notebook_id}/artifacts/executions/{execution_id}",
+    tags=["artifacts"],
+)
+async def download_notebook_execution_artifact(
+    notebook_id: str,
+    execution_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    store = _get_execution_store()
+    root = store.get_notebook_for_repair(notebook_id, token)
+    execution = store.get_execution(execution_id, token)
+    if root is None or execution is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "artifact_not_found",
+                "message": "The execution artifact was not found or is not accessible.",
+            },
+        )
+    execution_notebook = store.get_notebook(execution["notebook_id"], token)
+    if (
+        execution_notebook is None
+        or (
+            execution["notebook_id"] != notebook_id
+            and execution_notebook["original_notebook_id"] != notebook_id
+        )
+        or not execution.get("artifact_available")
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "artifact_not_found",
+                "message": "The execution artifact was not found or is not accessible.",
+            },
+        )
+    artifact = store.get_artifact(execution_id, token)
+    if artifact is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "artifact_not_found",
+                "message": "The execution artifact is no longer available.",
+            },
+        )
+    filename = f"{Path(execution['notebook_filename']).stem}-executed.ipynb"
+    return Response(
+        content=artifact,
+        media_type="application/x-ipynb+json",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(filename)}"
+            )
+        },
+    )
 
 
 @app.get("/api/verifications/{verification_id}", tags=["verification"])

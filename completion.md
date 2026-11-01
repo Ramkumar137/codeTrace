@@ -836,4 +836,76 @@ No dependencies were added or changed.
 - Verification is bounded by the implemented source patterns and recorded execution evidence; it does not prove that all leakage is absent.
 - Group-aware split syntax is only partial evidence; post-repair dataset overlap is not recomputed.
 - Metric extraction requires explicit labels in captured output. Metric deltas are withheld when the stored runs do not establish comparable data and configuration.
-- No browser end-to-end verification session or Phase 7 report-generation functionality was completed.
+- No browser end-to-end verification session was completed in Phase 6.
+
+## Phase 7 - Evidence Report and Downloads
+
+### Completed work
+
+- Added immutable, schema-versioned report snapshots generated from the authorized original notebook and its persisted related notebook versions, repair manifests, dataset references, execution records, and verification/comparison records.
+- Reused the notebook parser/analyzer and existing pipeline graph; reports preserve findings, evidence, source snippets, cell references, pipeline node links, repair proposal/approval state, execution outputs and metadata, verification statuses, comparisons, conclusions, and limitations.
+- Added HTML, PDF, and JSON exports. HTML is escaped and preview responses include a restrictive Content Security Policy. PDF generation uses ReportLab 4.4.4.
+- Added capability-token-protected report generation, listing, metadata, preview, and download APIs. Reports are stored in SQLite and represent a snapshot; generation does not execute notebooks or modify execution/audit records.
+- Added an authorized artifact catalog and downloads for stored original/corrected notebooks, associated CSV datasets, and executed notebook artifacts when present.
+- Added common credential-field and token-pattern redaction. Dataset contents are excluded from report bodies and are available only as separate authorized downloads.
+- Added the Reports workspace for report generation, saved-report listing, HTML preview, PDF/HTML/JSON downloads, and available artifact downloads.
+- Updated README with architecture, endpoints, formats, report workflow, traceability, security caveats, and limitations.
+
+### Files created
+
+| Path | Purpose |
+|---|---|
+| `backend/app/services/report_service.py` | Collects authorized persisted evidence, validates record associations, redacts common secret patterns, and renders HTML/PDF exports. |
+| `tests/test_reports.py` | Tests complete and partial reports, empty and multiple findings, exports, secret redaction, no-execution behavior, record relationships, authorization, and artifact downloads. |
+
+### Files modified
+
+| Path | Change |
+|---|---|
+| `backend/app/main.py` | Adds report APIs and authorized notebook, dataset, and executed-notebook artifact APIs. |
+| `backend/app/services/execution_store.py` | Adds report snapshot persistence, report listing/retrieval, notebook version lookup, and associated notebook artifact lookup. |
+| `frontend/index.html` | Adds the Reports controls, preview, and artifact list in the existing workspace. |
+| `frontend/js/app.js` | Generates/lists reports, fetches previews and exports with the notebook token, and downloads authorized artifacts. |
+| `frontend/css/style.css` | Styles the report controls, previews, and artifact list in the existing theme. |
+| `requirements.txt` | Adds `reportlab==4.4.4` for PDF export. |
+| `README.md` | Documents report design, endpoints, exports, traceability, artifacts, and limitations. |
+| `completion.md` | Records Phase 7 implementation and verification results. |
+
+### APIs
+
+- `POST /api/notebooks/{notebook_id}/reports`
+- `GET /api/notebooks/{notebook_id}/reports`
+- `GET /api/reports/{report_id}`
+- `GET /api/reports/{report_id}/html`
+- `GET /api/reports/{report_id}/pdf`
+- `GET /api/reports/{report_id}/json`
+- `GET /api/notebooks/{notebook_id}/artifacts`
+- `GET /api/notebooks/{notebook_id}/artifacts/notebooks/{artifact_notebook_id}`
+- `GET /api/notebooks/{notebook_id}/artifacts/datasets/{dataset_id}`
+- `GET /api/notebooks/{notebook_id}/artifacts/executions/{execution_id}`
+
+All report and artifact routes require the notebook capability token and verify notebook/record association.
+
+### Dependency
+
+- Added and installed `reportlab==4.4.4`; its declared transitive dependencies were installed by pip.
+
+### Commands executed and actual results
+
+| Command/check | Result |
+|---|---|
+| `.\venv\Scripts\python.exe -m pip install -r requirements.txt` | Passed; ReportLab 4.4.4 installed. |
+| `.\venv\Scripts\python.exe -m pytest tests\ -q` | **147 passed, 0 failed**; one existing Starlette/AnyIO deprecation warning. |
+| `node --check frontend\js\app.js` | Passed. |
+| `.\venv\Scripts\python.exe -m compileall -q backend\app tests\` | Passed. |
+| `git diff --check` | Passed. |
+| Pylance diagnostics for `report_service.py`, `main.py`, and `test_reports.py` | No diagnostics. `execution_store.py` reported only existing Windows-conditional informational diagnostics. |
+| Browser DOM smoke check | The Reports generate button and preview iframe were present; the former local-only JSON download button was absent. API health returned `ERR_CONNECTION_RESET`, so report generation was not exercised end-to-end in the browser. |
+
+### Limitations
+
+- Report generation is a synchronous API operation; it snapshots the related records available at generation time.
+- Repair proposal approval/rejection decisions are not persisted by the browser workflow. Reports mark proposals without an approved stored manifest as `decision_not_persisted` rather than inferring rejection or approval.
+- Common secret patterns are redacted, but arbitrary secrets embedded in notebook text may not be recognized. Review reports before sharing.
+- Pipeline nodes and edges are included from the existing trace. A server-side graph image export is not implemented.
+- Dataset contents are not embedded in reports; associated CSV files are separately downloadable with the notebook capability token.
