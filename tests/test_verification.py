@@ -135,6 +135,11 @@ def test_preprocessing_repair_is_verified_and_metrics_remain_separate():
     metric = result["comparison"]["metric_comparisons"][0]
     assert metric["name"] == "accuracy"
     assert metric["deltas"] == pytest.approx([0.02])
+    assert metric["difference_percentage_points"] == pytest.approx([2.0])
+    assert result["comparison"]["documented_changes"]
+    assert result["comparison"]["original_metrics"][0][
+        "evaluation_dataset_references"
+    ] == DATASET_REFERENCE
     assert finding["verification_status"] == "verified"
 
 
@@ -433,6 +438,9 @@ def test_equivalent_experiments_compare_only_labeled_metric_values():
     assert next(
         item for item in comparison["metric_comparisons"] if item["name"] == "accuracy"
     )["deltas"] == pytest.approx([0.02])
+    assert next(
+        item for item in comparison["metric_comparisons"] if item["name"] == "accuracy"
+    )["difference_percentage_points"] == pytest.approx([2.0])
     assert extract_metrics(original)[1]["name"] == "rmse"
 
 

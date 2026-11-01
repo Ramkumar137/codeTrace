@@ -44,3 +44,9 @@ htmlcov/
 .ipynb_checkpoints/
 
 node_modules/
+
+
+.firebase/
+.firebaserc
+firebase.json
+frontend/404.html

@@ -133,6 +133,7 @@ def analyze_train_test_overlap(
 
     findings = []
     checks = []
+    group_partition_visualization = None
     if set(train_columns) == set(test_columns):
         ordered_columns = sorted(train_columns)
         train_row_set = {
@@ -221,6 +222,11 @@ def analyze_train_test_overlap(
             record[column] for record in test_records if record[column]
         }
         shared_values = train_values & test_values
+        is_group = check_name == "group_overlap"
+        if is_group:
+            group_partition_visualization = _group_partition_visualization(
+                train_values, test_values
+            )
         checks.append(
             {
                 "check": check_name,
@@ -230,7 +236,6 @@ def analyze_train_test_overlap(
             }
         )
         if shared_values:
-            is_group = check_name == "group_overlap"
             if is_group:
                 (
                     severity,
@@ -288,12 +293,38 @@ def analyze_train_test_overlap(
         "train_row_count": len(train_rows),
         "test_row_count": len(test_rows),
         "checks": checks,
+        "group_partition_visualization": group_partition_visualization,
         "findings": findings,
         "limitations": [
             "Only the two explicitly uploaded CSV files are compared; notebook paths are never opened.",
             "Exact row equality is not treated as proof that rows represent the same individual.",
             "Identifier and group semantics are configured by the user; raw values are not returned or retained.",
         ],
+    }
+
+
+def _group_partition_visualization(
+    train_values: set[str], test_values: set[str]
+) -> dict[str, Any]:
+    aliases = {
+        value: f"Entity {index:03d}"
+        for index, value in enumerate(sorted(train_values | test_values)[:1000], 1)
+    }
+
+    def labels(values: set[str]) -> list[str]:
+        return [aliases[value] for value in sorted(values)[:30] if value in aliases]
+
+    return {
+        "source": "explicitly_uploaded_train_test_csvs",
+        "execution_partition_assignments": False,
+        "train_group_count": len(train_values),
+        "test_group_count": len(test_values),
+        "overlap_count": len(train_values & test_values),
+        "train_groups": labels(train_values),
+        "test_groups": labels(test_values),
+        "overlap_groups": labels(train_values & test_values),
+        "truncated": len(train_values | test_values) > 30,
+        "identifiers_anonymized": True,
     }
 
 

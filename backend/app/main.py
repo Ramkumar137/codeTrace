@@ -24,7 +24,11 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.models.dataset import DatasetAnalysisResponse
-from backend.app.models.execution import ExecutionRequest, ExecutionStatusResponse
+from backend.app.models.execution import (
+    ExecutionRequest,
+    ExecutionStatusResponse,
+    PairedExecutionRequest,
+)
 from backend.app.models.notebook import NotebookUploadResponse
 from backend.app.models.verification import VerificationRequest
 from backend.app.services.dataset_analyzer import (
@@ -131,6 +135,22 @@ def _authorized_notebook(notebook_id: str, token: str) -> dict:
             },
         )
     return notebook
+
+
+def _paired_status(
+    original_execution: dict, corrected_execution: dict
+) -> str:
+    statuses = {original_execution["status"], corrected_execution["status"]}
+    if "running" in statuses:
+        return "running"
+    if "queued" in statuses:
+        return "queued"
+    if statuses == {"completed"}:
+        return "completed"
+    for status in ("unavailable", "timed_out", "cancelled", "failed"):
+        if status in statuses:
+            return status
+    return "failed"
 
 
 # Origins allowed to call this API during local development.
@@ -407,6 +427,38 @@ async def generate_notebook_repairs(
         await file.close()
 
 
+@app.get(
+    "/api/notebooks/{notebook_id}/versions/{version_id}/analysis",
+    tags=["notebooks"],
+)
+async def analyze_notebook_version(
+    notebook_id: str,
+    version_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """Statically analyze an authorized original or corrected notebook version."""
+    token = _require_access_token(authorization)
+    artifact = _get_execution_store().get_notebook_artifact(
+        notebook_id, version_id, token
+    )
+    if artifact is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_version_not_found",
+                "message": "The notebook version was not found or is not accessible.",
+            },
+        )
+    try:
+        notebook = parse_notebook(artifact["filename"], artifact["content"])
+    except NotebookParseError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": error.code, "message": error.message},
+        ) from error
+    return {"notebook": notebook}
+
+
 @app.post("/api/notebooks/{notebook_id}/datasets", tags=["datasets"])
 async def attach_execution_dataset(
     notebook_id: str,
@@ -589,6 +641,196 @@ async def list_notebook_executions(
             },
         )
     return {"executions": executions}
+
+
+@app.post(
+    "/api/notebooks/{notebook_id}/paired-experiments",
+    status_code=202,
+    tags=["executions"],
+)
+async def start_paired_experiment(
+    notebook_id: str,
+    request: PairedExecutionRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Explicitly run an original and an approved correction on the same datasets."""
+    token = _require_access_token(authorization)
+    store = _get_execution_store()
+    original = _authorized_notebook(notebook_id, token)
+    corrected = store.get_notebook(request.corrected_notebook_id, token)
+    if original["notebook_type"] != "original":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "original_notebook_required",
+                "message": "Paired experiments must be started from the original notebook.",
+            },
+        )
+    if (
+        corrected is None
+        or corrected["notebook_type"] != "corrected"
+        or corrected["original_notebook_id"] != notebook_id
+        or not corrected["approved"]
+        or not store.get_approved_repairs(corrected["notebook_id"], token)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "approved_repair_required",
+                "message": "Select an approved corrected notebook with persisted repair evidence.",
+            },
+        )
+    try:
+        original_execution, corrected_execution = (
+            await _get_execution_manager().start_pair(
+                original, corrected, request.dataset_ids, token
+            )
+        )
+    except ExecutionRequestError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_paired_execution", "message": str(error)},
+        ) from error
+
+    pair = store.create_paired_experiment(
+        notebook_id,
+        corrected["notebook_id"],
+        original_execution["execution_id"],
+        corrected_execution["execution_id"],
+    )
+    return {
+        "pair": pair,
+        "status": _paired_status(original_execution, corrected_execution),
+        "notebooks": {
+            "original": {"filename": original["filename"], "type": "original"},
+            "corrected": {
+                "filename": corrected["filename"],
+                "type": "corrected",
+            },
+        },
+        "original_execution": original_execution,
+        "corrected_execution": corrected_execution,
+    }
+
+
+@app.get(
+    "/api/notebooks/{notebook_id}/paired-experiments",
+    tags=["executions"],
+)
+async def list_paired_experiments(
+    notebook_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    pairs = _get_execution_store().list_paired_experiments(notebook_id, token)
+    if pairs is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_not_found",
+                "message": "The original notebook was not found or is not accessible.",
+            },
+        )
+    return {"paired_experiments": pairs}
+
+
+@app.get(
+    "/api/notebooks/{notebook_id}/paired-experiments/{pair_id}",
+    tags=["executions"],
+)
+async def get_paired_experiment(
+    notebook_id: str,
+    pair_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """Return both stored runs and finalize evidence verification when terminal."""
+    token = _require_access_token(authorization)
+    store = _get_execution_store()
+    pair = store.get_paired_experiment(pair_id, token)
+    if pair is None or pair["original_notebook_id"] != notebook_id:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "paired_experiment_not_found",
+                "message": "The paired experiment was not found or is not accessible.",
+            },
+        )
+    original_execution = store.get_execution(pair["original_execution_id"], token)
+    corrected_execution = store.get_execution(pair["corrected_execution_id"], token)
+    if original_execution is None or corrected_execution is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "execution_not_found",
+                "message": "One or both paired execution records are unavailable.",
+            },
+        )
+    original_notebook = store.get_notebook(notebook_id, token)
+    corrected_notebook = store.get_notebook(pair["corrected_notebook_id"], token)
+    verification = pair["verification_result"]
+    if (
+        verification is None
+        and original_execution["status"] not in {"queued", "running"}
+        and corrected_execution["status"] not in {"queued", "running"}
+    ):
+        original_record = store.get_notebook_for_repair(notebook_id, token)
+        corrected_record = store.get_notebook(pair["corrected_notebook_id"], token)
+        approved_repairs = store.get_approved_repairs(
+            pair["corrected_notebook_id"], token
+        )
+        if original_record is None or corrected_record is None or not approved_repairs:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "paired_verification_evidence_unavailable",
+                    "message": "Stored notebook or approved repair evidence is unavailable.",
+                },
+            )
+        try:
+            original_analysis = parse_notebook(
+                original_record["filename"], bytes(original_record["content"])
+            )
+            corrected_analysis = parse_notebook(
+                corrected_record["filename"], bytes(corrected_record["content"])
+            )
+            verification = build_verification(
+                original_notebook={**original_analysis, "notebook_id": notebook_id},
+                corrected_notebook={
+                    **corrected_analysis,
+                    "notebook_id": pair["corrected_notebook_id"],
+                },
+                approved_repairs=approved_repairs,
+                original_execution=original_execution,
+                corrected_execution=corrected_execution,
+            )
+        except (NotebookParseError, ValueError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "paired_verification_failed",
+                    "message": str(error),
+                },
+            ) from error
+        verification = store.save_paired_verification(pair_id, verification)
+
+    return {
+        "pair": pair,
+        "status": _paired_status(original_execution, corrected_execution),
+        "notebooks": {
+            "original": {
+                "filename": original_notebook["filename"],
+                "type": "original",
+            },
+            "corrected": {
+                "filename": corrected_notebook["filename"],
+                "type": "corrected",
+            },
+        },
+        "original_execution": original_execution,
+        "corrected_execution": corrected_execution,
+        "verification": verification,
+        "comparison": verification["comparison"] if verification else None,
+    }
 
 
 @app.post(

@@ -968,3 +968,61 @@ The existing frontend was served at `http://127.0.0.1:5500`; an isolated API ins
 - Docker execution, container cleanup under a live Docker engine, and notebook success/failure/timeout end-to-end scenarios remain unverified because the Docker daemon was unavailable. The observed unavailable state did not fall back to host execution.
 - An API process already running on port 8000 produced a browser CORS/network failure on the initial execution request. Its CORS preflight and health headers passed direct checks; the complete browser workflow passed against the isolated API on port 8002. The pre-existing process was left untouched, so its transient/runtime-specific cause remains unconfirmed.
 - The project remains a local-development application without account authentication or a distributed durable execution queue. Static-analysis coverage, repair scope, and secret redaction retain the limitations documented above.
+
+---
+
+## Paired experiments, corrected-source trace, and anonymized group visualization
+
+### Implemented functionality
+
+- Added an explicit paired-experiment request that requires an approved corrected notebook with persisted repair evidence and at least one notebook-associated dataset. The original and corrected versions receive distinct execution IDs and are sent separately through the existing Docker-only execution manager with the same selected dataset IDs.
+- Persisted pair metadata linking the original notebook, corrected notebook, and both execution IDs. Added authorized pair listing/retrieval. Once both runs reach terminal states, retrieving a pair invokes the existing verification engine and stores one associated verification result; execution failures and unavailable Docker states remain visible.
+- Extended the existing comparison evidence with evaluation dataset references, split/model/seed context, feature-expression differences, and signed percentage-point differences for captured classification rates. Comparability remains conservative: differences in model/split/runtime/package evidence withhold deltas, and feature-expression changes are explicitly documented. No metric is generated when a labeled value was not captured.
+- Added side-by-side original/corrected experiment cards in the existing UI, including actual notebook names, run states, captured scores, execution logs, configuration details, comparison reasons, and separate repair-verification output.
+- Added a capability-authorized static-analysis API for stored notebook versions. After corrected-notebook generation, the frontend fetches its actual source analysis and switches the existing pipeline trace to the corrected graph; original findings remain tied to original source.
+- Added ephemeral aliases for group identifiers in explicitly uploaded train/test CSVs and a two-partition membership visualization. Raw group values are never returned. The UI distinguishes uploaded CSV evidence from execution partition assignments and states that source-unlinked group overlap does not trigger a speculative notebook rewrite.
+- Updated README feature status, APIs, workflow, comparison rules, and limitations.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `backend/app/models/execution.py` | Adds validated paired-experiment request data. |
+| `backend/app/main.py` | Adds corrected-version analysis and authorized paired-experiment start/list/retrieval routes; finalizes evidence verification after both runs terminate. |
+| `backend/app/services/execution_manager.py` | Reserves capacity and starts the two runs through the existing isolated runner. |
+| `backend/app/services/execution_store.py` | Persists pair associations and one verification result per pair. |
+| `backend/app/services/verification_engine.py` | Records experiment context, documents feature-input changes, and calculates percentage-point deltas for classification rates. |
+| `backend/app/services/dataset_overlap.py` | Returns temporary pseudonyms and aggregate partition membership for configured groups. |
+| `frontend/index.html` | Adds paired-run controls/results and original/corrected pipeline selection. |
+| `frontend/js/app.js` | Implements paired-run polling/rendering, corrected-version trace retrieval, and anonymized group visualization. |
+| `frontend/css/style.css` | Styles the paired experiment cards and partition visualization responsively. |
+| `tests/test_execution.py` | Tests approved-pair gating, same datasets, persisted failures, corrected static analysis, and a successful paired comparison using actual captured fixture outputs. |
+| `tests/test_verification.py` | Tests metric context, documented feature changes, and percentage-point deltas. |
+| `tests/test_dataset_overlap.py` | Tests anonymized group membership and absence of raw identifiers. |
+| `README.md` | Documents the implemented APIs, workflow, evidence, and limitations. |
+| `completion.md` | Records this implementation and actual validation. |
+
+### Dependencies
+
+No dependency manifest or runtime dependency was changed. The test environment was missing already-declared `nbformat==5.10.4` and `reportlab==4.4.4`; both were installed to run the suite.
+
+### Validation results
+
+| Check | Actual result |
+|---|---|
+| Focused execution, verification, and group-overlap tests | **55 passed, 0 failed**. |
+| `python -m pytest tests -q` | **154 passed, 0 failed**; two existing Starlette/AnyIO deprecation warnings. |
+| `node --check frontend\js\app.js` | Passed. |
+| `python -m compileall -q backend tests` | Passed. |
+| `git diff --check` | Passed. |
+| Browser DOM smoke check | Existing Inspect route rendered; paired launch/results and trace-version controls were present. No notebook or dataset was uploaded to the deployed API. |
+| Docker daemon check | Unavailable: Docker Desktop's configured engine pipe was not present. No live container execution was attempted; isolated execution and paired API behavior were tested with controlled runner doubles, and existing tests verify Docker isolation arguments and no host fallback. |
+
+### Limitations
+
+- Live Docker execution, container cleanup under an available daemon, and live notebook outputs were not verified in this environment.
+- Automatic repairs remain limited to the existing deterministic preprocessing-before-split and direct literal target-column cases. Group-overlap findings, target-derived features beyond that exact literal case, and test-set-driven tuning are not automatically rewritten.
+- The group visualization uses explicitly uploaded CSV splits, not partition assignments emitted by notebook execution. It does not create corrected group membership or prove notebook-level group separation.
+- Metrics are extracted only from explicitly labeled captured text output. Unlabeled values, plots, unsupported output formats, and metrics absent from an execution remain unavailable.
+- A paired experiment is finalized when its authorized retrieval endpoint is polled after both runs become terminal. The in-process execution queue remains intended for a single API worker, not a distributed durable queue.
+- Feature-expression differences are reported as intentional/documented changes, but a comparable score delta does not isolate a causal effect of leakage correction when the feature representation or held-out partition changes.

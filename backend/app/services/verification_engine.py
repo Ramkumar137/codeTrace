@@ -101,6 +101,9 @@ def _execution_context(cells: list[dict[str, Any]]) -> dict[str, Any]:
                     {
                         "method": name,
                         "options": options,
+                        "feature_reference": (
+                            ast.unparse(node.args[0]) if node.args else None
+                        ),
                         "target_reference": (
                             ast.unparse(node.args[1]) if len(node.args) > 1 else None
                         ),
@@ -217,10 +220,24 @@ def compare_experiments(
         corrected_context["models"],
         required=True,
     )
+    original_split_protocol = [
+        {
+            key: split.get(key)
+            for key in ("method", "options", "target_reference", "output_variables")
+        }
+        for split in original_context["splits"]
+    ]
+    corrected_split_protocol = [
+        {
+            key: split.get(key)
+            for key in ("method", "options", "target_reference", "output_variables")
+        }
+        for split in corrected_context["splits"]
+    ]
     compare_setting(
         "train_test_split_configuration",
-        original_context["splits"],
-        corrected_context["splits"],
+        original_split_protocol,
+        corrected_split_protocol,
         required=True,
     )
     compare_setting(
@@ -229,6 +246,24 @@ def compare_experiments(
         corrected_context["random_seeds"],
         required=True,
     )
+    intentional_changes = []
+    original_features = [
+        split.get("feature_reference") for split in original_context["splits"]
+    ]
+    corrected_features = [
+        split.get("feature_reference") for split in corrected_context["splits"]
+    ]
+    if original_features != corrected_features:
+        differences.append(
+            {
+                "setting": "feature_input_expression",
+                "original": original_features,
+                "corrected": corrected_features,
+            }
+        )
+        intentional_changes.append(
+            "The feature expression passed to the split changed. This may be required by the approved preprocessing repair; interpret any metric difference alongside that change."
+        )
     compare_setting(
         "python_version",
         original_execution.get("python_version"),
@@ -290,6 +325,16 @@ def compare_experiments(
     comparable = same_nonempty_datasets and executions_completed and not limitations
     original_metrics = extract_metrics(original_execution)
     corrected_metrics = extract_metrics(corrected_execution)
+    for metric in original_metrics:
+        metric["evaluation_dataset_references"] = original_dataset_set
+        metric["evaluation_split_configuration"] = original_context["splits"]
+        metric["model_configuration"] = original_context["models"]
+        metric["random_seeds"] = original_context["random_seeds"]
+    for metric in corrected_metrics:
+        metric["evaluation_dataset_references"] = corrected_dataset_set
+        metric["evaluation_split_configuration"] = corrected_context["splits"]
+        metric["model_configuration"] = corrected_context["models"]
+        metric["random_seeds"] = corrected_context["random_seeds"]
     metric_comparisons = _compare_metric_values(
         original_metrics, corrected_metrics, comparable
     )
@@ -306,6 +351,7 @@ def compare_experiments(
         "comparable": comparable,
         "comparability_reasons": list(dict.fromkeys(limitations)),
         "setup_differences": differences,
+        "documented_changes": intentional_changes,
         "original_setup": original_context,
         "corrected_setup": corrected_context,
         "original_execution": _execution_summary(original_execution),
@@ -929,6 +975,25 @@ def _compare_metric_values(
                 right["value"] - left["value"]
                 for left, right in zip(original_values, corrected_values)
             ]
+        percentage_point_deltas = []
+        is_rate_metric = name in {
+            "accuracy",
+            "precision",
+            "recall",
+            "f1",
+            "roc_auc",
+        }
+        if deltas and is_rate_metric:
+            percentage_point_deltas = [
+                delta * 100
+                if left["unit"] == "value"
+                and abs(left["value"]) <= 1
+                and abs(right["value"]) <= 1
+                else delta
+                for left, right, delta in zip(
+                    original_values, corrected_values, deltas
+                )
+            ]
         comparisons.append(
             {
                 "name": name,
@@ -942,6 +1007,7 @@ def _compare_metric_values(
                     else None
                 ),
                 "deltas": deltas,
+                "difference_percentage_points": percentage_point_deltas,
                 "comparison_available": bool(comparable and values_match),
                 "reason": (
                     None

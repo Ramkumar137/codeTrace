@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -395,6 +396,32 @@ def test_approved_corrected_notebook_requires_separate_explicit_run(
     corrected = store.get_notebook(corrected_id, token)
     assert corrected["notebook_type"] == "corrected"
     assert corrected["approved"] == 1
+    corrected_trace = client.get(
+        f"/api/notebooks/{data['notebook_id']}/versions/{corrected_id}/analysis",
+        headers=headers,
+    )
+    assert corrected_trace.status_code == 200
+    assert corrected_trace.json()["notebook"]["analysis"]["pipeline_trace"]["nodes"]
+    assert bytes(store.get_notebook(data["notebook_id"], token)["content"]) == (
+        notebook_content
+    )
+    assert bytes(corrected["content"]) != notebook_content
+    dataset_response = client.post(
+        f"/api/notebooks/{data['notebook_id']}/datasets",
+        headers=headers,
+        files={"file": ("data.csv", b"feature,label\n1,0\n", "text/csv")},
+    )
+    assert dataset_response.status_code == 200
+    dataset_id = dataset_response.json()["dataset"]["dataset_id"]
+    rejected_pair = client.post(
+        f"/api/notebooks/{data['notebook_id']}/paired-experiments",
+        headers=headers,
+        json={
+            "corrected_notebook_id": "not-an-approved-correction",
+            "dataset_ids": [dataset_id],
+        },
+    )
+    assert rejected_pair.status_code == 403
 
     original_run = client.post(
         f"/api/notebooks/{data['notebook_id']}/executions",
@@ -414,6 +441,168 @@ def test_approved_corrected_notebook_requires_separate_explicit_run(
         != corrected_run.json()["detail"]["execution"]["execution_id"]
     )
     assert corrected_run.json()["detail"]["execution"]["notebook_type"] == "corrected"
+
+    paired_start = client.post(
+        f"/api/notebooks/{data['notebook_id']}/paired-experiments",
+        headers=headers,
+        json={
+            "corrected_notebook_id": corrected_id,
+            "dataset_ids": [dataset_id],
+        },
+    )
+    assert paired_start.status_code == 202
+    pair_response = paired_start.json()
+    assert pair_response["status"] == "unavailable"
+    assert pair_response["original_execution"]["execution_id"] != (
+        pair_response["corrected_execution"]["execution_id"]
+    )
+    expected_references = [{"dataset_id": dataset_id, "filename": "data.csv"}]
+    assert pair_response["original_execution"]["dataset_references"] == expected_references
+    assert pair_response["corrected_execution"]["dataset_references"] == expected_references
+    assert runner.calls == []
+
+    pair_id = pair_response["pair"]["pair_id"]
+    paired_result = client.get(
+        f"/api/notebooks/{data['notebook_id']}/paired-experiments/{pair_id}",
+        headers=headers,
+    )
+    assert paired_result.status_code == 200
+    result = paired_result.json()
+    assert result["verification"]["original_execution_status"] == "unavailable"
+    assert result["verification"]["corrected_execution_status"] == "unavailable"
+    assert result["comparison"]["metric_comparisons"] == []
+    assert result["comparison"]["comparable"] is False
+    assert store.get_paired_experiment(pair_id, token)["verification_result"][
+        "verification_id"
+    ] == result["verification"]["verification_id"]
+    assert len(store.list_verifications(data["notebook_id"], token)) == 1
+
+
+def test_paired_experiment_comparison_uses_actual_completed_metrics(
+    tmp_path, monkeypatch
+):
+    store = ExecutionStore(tmp_path)
+    original_content = nbformat.writes(
+        nbformat.v4.new_notebook(
+            cells=[
+                nbformat.v4.new_code_cell(
+                    "from sklearn.preprocessing import StandardScaler"
+                ),
+                nbformat.v4.new_code_cell(
+                    "scaler = StandardScaler()\nX_scaled = scaler.fit_transform(X)"
+                ),
+                nbformat.v4.new_code_cell(
+                    "X_train, X_test, y_train, y_test = "
+                    "train_test_split(X_scaled, y, random_state=42)"
+                ),
+                nbformat.v4.new_code_cell(
+                    "from sklearn.linear_model import LogisticRegression\n"
+                    "model = LogisticRegression(random_state=7)\n"
+                    "model.fit(X_train, y_train)"
+                ),
+            ]
+        )
+    ).encode()
+
+    class MetricRunner(MockDockerRunner):
+        async def execute(self, execution_id, notebook_content, datasets):
+            self.calls.append((execution_id, notebook_content, datasets))
+            score = "0.96" if notebook_content == original_content else "0.84"
+            return {
+                "status": "completed",
+                "executed_cell_count": 4,
+                "successful_cell_count": 4,
+                "outputs": [
+                    {
+                        "cell_number": 4,
+                        "outputs": [
+                            {"output_type": "stream", "text": f"Accuracy: {score}"}
+                        ],
+                    }
+                ],
+                "python_version": "3.12.0",
+                "package_versions": {"scikit-learn": "1.5.2"},
+                "artifact": b"executed notebook",
+                "logs": "",
+                "environment": self.environment,
+                "duration_seconds": 0.02,
+            }
+
+    runner = MetricRunner()
+    monkeypatch.setattr(main, "execution_store", store)
+    monkeypatch.setattr(main, "execution_manager", ExecutionManager(store, runner))
+    uploaded = client.post(
+        "/api/notebooks/upload",
+        files={
+            "file": ("sample.ipynb", original_content, "application/octet-stream")
+        },
+    )
+    assert uploaded.status_code == 200
+    data = uploaded.json()
+    headers = {"Authorization": f"******"}
+    headers = {"Authorization": "Bearer " + data["access_token"]}
+    attached = client.post(
+        f"/api/notebooks/{data['notebook_id']}/datasets",
+        headers=headers,
+        files={"file": ("data.csv", b"feature,label\n1,0\n", "text/csv")},
+    )
+    assert attached.status_code == 200, attached.text
+    dataset_id = attached.json()["dataset"]["dataset_id"]
+    repair = next(
+        item
+        for item in data["notebook"]["analysis"]["repairs"]
+        if item["repair_type"] == "preprocessing_fit_before_split"
+    )
+    generated = client.post(
+        "/api/notebooks/repairs/generate",
+        headers=headers,
+        data={
+            "repair_ids": json.dumps([repair["repair_id"]]),
+            "notebook_id": data["notebook_id"],
+        },
+        files={
+            "file": ("sample.ipynb", original_content, "application/octet-stream")
+        },
+    )
+    assert generated.status_code == 200
+    pair_start = client.post(
+        f"/api/notebooks/{data['notebook_id']}/paired-experiments",
+        headers=headers,
+        json={
+            "corrected_notebook_id": generated.headers["X-CodeTrace-Notebook-ID"],
+            "dataset_ids": [dataset_id],
+        },
+    )
+    assert pair_start.status_code == 202
+    pair_id = pair_start.json()["pair"]["pair_id"]
+
+    for _ in range(100):
+        result = client.get(
+            f"/api/notebooks/{data['notebook_id']}/paired-experiments/{pair_id}",
+            headers=headers,
+        )
+        assert result.status_code == 200
+        if result.json()["status"] == "completed":
+            break
+        time.sleep(0.01)
+
+    result = result.json()
+    assert result["status"] == "completed"
+    assert result["comparison"]["comparable"] is True
+    accuracy = next(
+        metric
+        for metric in result["comparison"]["metric_comparisons"]
+        if metric["name"] == "accuracy"
+    )
+    assert accuracy["original_values"] == [0.96]
+    assert accuracy["corrected_values"] == [0.84]
+    assert accuracy["difference_percentage_points"] == pytest.approx([-12.0])
+    assert result["verification"]["findings"][0]["verification_status"] == "verified"
+    assert len(runner.calls) == 2
+    assert {call[1] for call in runner.calls} == {
+        original_content,
+        bytes(store.get_notebook(generated.headers["X-CodeTrace-Notebook-ID"], data["access_token"])["content"]),
+    }
 
 
 def test_docker_command_enforces_isolation_without_host_output_mount(tmp_path):

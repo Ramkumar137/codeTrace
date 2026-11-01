@@ -177,6 +177,11 @@
         <section class="workspace-section workspace-page hidden" id="pipeline-section" data-workspace-page="pipeline">
           <h2>Pipeline Trace</h2>
           <p class="section-description">Connected paths are generated from recognized source operations and variable dependencies, not cell order alone. All links are static evidence and do not prove runtime data transfer.</p>
+          <label class="upload-label" for="pipeline-version-select">Notebook version shown in trace</label>
+          <select id="pipeline-version-select" class="graph-filter-select">
+            <option value="original">Original notebook</option>
+          </select>
+          <p id="pipeline-version-status" class="graph-status" role="status" aria-live="polite"></p>
           <p id="pipeline-status" class="graph-status" role="status" aria-live="polite"></p>
           <p id="pipeline-error" class="empty-state hidden" role="alert"></p>
           <div class="graph-legend" aria-label="Pipeline graph legend">
@@ -366,11 +371,25 @@
               </details>
             </div>
           </form>
+          <section class="workspace-card paired-launch-card" aria-labelledby="paired-launch-heading">
+            <h3 id="paired-launch-heading">Run a paired experiment</h3>
+            <p class="card-note">After approving a correction, run the original and corrected versions with the same explicitly selected dataset files. Both runs remain separate Docker executions.</p>
+            <button class="btn" id="start-paired-experiment" type="button" disabled>Start original + corrected runs</button>
+            <p class="graph-status" id="paired-experiment-launch-status" role="status" aria-live="polite"></p>
+          </section>
         </section>
 
         <section class="workspace-section workspace-page hidden" id="verification-section" data-workspace-page="verification" aria-labelledby="verification-heading">
           <h2 id="verification-heading">Repair Verification & Experiment Comparison</h2>
           <p class="section-description">Verify approved repairs against saved original and corrected execution records. This view never starts or repeats an experiment. Repair verification and model metric comparison are reported separately.</p>
+          <section class="workspace-card paired-results-card" aria-labelledby="paired-results-heading">
+            <h3 id="paired-results-heading">Paired experiment results</h3>
+            <p class="card-note">Review both execution records, actual captured metrics, the comparison decision, and the separate repair-verification evidence.</p>
+            <button class="btn" id="load-paired-experiments" type="button">Load saved paired experiments</button>
+            <ul id="paired-experiment-list" class="compact-list"></ul>
+            <p id="paired-experiment-status" class="graph-status" role="status" aria-live="polite"></p>
+            <div id="paired-experiment-results" class="paired-experiment-results" aria-live="polite"></div>
+          </section>
           <div class="workspace-card verification-card">
             <h3>Select completed experiments</h3>
             <p class="card-note">Run the original and approved corrected notebook separately in Experiments first. Only records for these exact notebook versions can be selected.</p>

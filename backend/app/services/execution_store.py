@@ -144,6 +144,23 @@ class ExecutionStore:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS paired_experiments (
+                pair_id TEXT PRIMARY KEY,
+                original_notebook_id TEXT NOT NULL
+                    REFERENCES notebooks(notebook_id),
+                corrected_notebook_id TEXT NOT NULL
+                    REFERENCES notebooks(notebook_id),
+                original_execution_id TEXT NOT NULL
+                    REFERENCES executions(execution_id),
+                corrected_execution_id TEXT NOT NULL
+                    REFERENCES executions(execution_id),
+                verification_result TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         connection.commit()
         try:
             yield connection
@@ -477,6 +494,125 @@ class ExecutionStore:
                     result["verified_at"],
                 ),
             )
+
+    def create_paired_experiment(
+        self,
+        original_notebook_id: str,
+        corrected_notebook_id: str,
+        original_execution_id: str,
+        corrected_execution_id: str,
+    ) -> dict[str, str]:
+        pair = {
+            "pair_id": str(uuid.uuid4()),
+            "original_notebook_id": original_notebook_id,
+            "corrected_notebook_id": corrected_notebook_id,
+            "original_execution_id": original_execution_id,
+            "corrected_execution_id": corrected_execution_id,
+            "created_at": _now(),
+        }
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO paired_experiments
+                    (pair_id, original_notebook_id, corrected_notebook_id,
+                     original_execution_id, corrected_execution_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                tuple(pair.values()),
+            )
+        return pair
+
+    def get_paired_experiment(
+        self, pair_id: str, access_token: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT p.*, n.access_token_hash
+                FROM paired_experiments p
+                JOIN notebooks n ON n.notebook_id = p.original_notebook_id
+                WHERE p.pair_id = ?
+                """,
+                (pair_id,),
+            ).fetchone()
+        if row is None or not hmac.compare_digest(
+            row["access_token_hash"], _access_hash(access_token)
+        ):
+            return None
+        result = dict(row)
+        del result["access_token_hash"]
+        result["verification_result"] = (
+            json.loads(result["verification_result"])
+            if result["verification_result"]
+            else None
+        )
+        return result
+
+    def list_paired_experiments(
+        self, notebook_id: str, access_token: str
+    ) -> list[dict[str, Any]] | None:
+        notebook = self.get_notebook(notebook_id, access_token)
+        if notebook is None or notebook["notebook_type"] != "original":
+            return None
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT pair_id FROM paired_experiments
+                WHERE original_notebook_id = ?
+                ORDER BY created_at DESC
+                """,
+                (notebook_id,),
+            ).fetchall()
+        return [
+            pair
+            for row in rows
+            if (pair := self.get_paired_experiment(row["pair_id"], access_token))
+            is not None
+        ]
+
+    def save_paired_verification(
+        self, pair_id: str, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT verification_result FROM paired_experiments
+                WHERE pair_id = ?
+                """,
+                (pair_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("The paired experiment does not exist.")
+            if row["verification_result"]:
+                return json.loads(row["verification_result"])
+            connection.execute(
+                """
+                INSERT INTO verifications
+                    (verification_id, original_notebook_id,
+                     corrected_notebook_id, original_execution_id,
+                     corrected_execution_id, result, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result["verification_id"],
+                    result["original_notebook_id"],
+                    result["corrected_notebook_id"],
+                    result["original_execution_id"],
+                    result["corrected_execution_id"],
+                    json.dumps(result),
+                    result["verified_at"],
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE paired_experiments
+                SET verification_result = ?
+                WHERE pair_id = ?
+                """,
+                (json.dumps(result), pair_id),
+            )
+        return result
 
     def get_verification(
         self, verification_id: str, access_token: str

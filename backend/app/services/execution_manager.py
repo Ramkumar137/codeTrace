@@ -56,6 +56,32 @@ class ExecutionManager:
         finally:
             self._pending_starts -= 1
 
+    async def start_pair(
+        self,
+        original: dict[str, Any],
+        corrected: dict[str, Any],
+        dataset_ids: list[str],
+        access_token: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if (
+            len(self._tasks) + self._pending_starts + 2
+            > self.MAX_ACTIVE_OR_QUEUED_EXECUTIONS
+        ):
+            raise ExecutionRequestError(
+                "The local execution queue does not have room for both experiments."
+            )
+        self._pending_starts += 2
+        try:
+            original_execution = await self._start_reserved(
+                original, dataset_ids, access_token
+            )
+            corrected_execution = await self._start_reserved(
+                corrected, dataset_ids, access_token
+            )
+            return original_execution, corrected_execution
+        finally:
+            self._pending_starts -= 2
+
     async def _start_reserved(
         self,
         notebook: dict[str, Any],

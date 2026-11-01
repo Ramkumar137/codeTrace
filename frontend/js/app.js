@@ -21,6 +21,7 @@ const workspace = document.getElementById("investigation-workspace");
 const cellSelector = document.getElementById("cell-selector");
 const cellMeta = document.getElementById("cell-meta");
 const cellSource = document.getElementById("cell-source");
+const pipelineVersionSelect = document.getElementById("pipeline-version-select");
 const datasetForm = document.getElementById("dataset-upload-form");
 const datasetFile = document.getElementById("dataset-file");
 const datasetUploadBtn = document.getElementById("dataset-upload-btn");
@@ -35,6 +36,12 @@ const executionDatasetSelect = document.getElementById("execution-dataset-select
 const executionNotebookSelect = document.getElementById("execution-notebook");
 const executionForm = document.getElementById("execution-form");
 const startExecutionButton = document.getElementById("start-execution-btn");
+const startPairedExperimentButton = document.getElementById("start-paired-experiment");
+const pairedExperimentLaunchStatus = document.getElementById("paired-experiment-launch-status");
+const loadPairedExperimentsButton = document.getElementById("load-paired-experiments");
+const pairedExperimentList = document.getElementById("paired-experiment-list");
+const pairedExperimentStatus = document.getElementById("paired-experiment-status");
+const pairedExperimentResults = document.getElementById("paired-experiment-results");
 const cancelExecutionButton = document.getElementById("cancel-execution-btn");
 const executionStatusMessage = document.getElementById("execution-status");
 const executionResult = document.getElementById("execution-result");
@@ -63,9 +70,13 @@ let currentNotebookFile = null;
 let currentNotebookId = null;
 let currentNotebookToken = null;
 let correctedNotebookId = null;
+let correctedNotebookAnalysis = null;
+let currentTraceNotebook = null;
 let currentExecutionId = null;
+let currentPairedExperimentId = null;
 let currentVerificationId = null;
 let executionPollTimer = null;
+let pairedExperimentPollTimer = null;
 let currentPipelineTrace = null;
 let repairDecisions = new Map();
 let pipelineGraphLayout = null;
@@ -80,6 +91,7 @@ let datasetUploadInProgress = false;
 let overlapCheckInProgress = false;
 
 cellSelector.addEventListener("change", () => selectCell(Number(cellSelector.value)));
+pipelineVersionSelect.addEventListener("change", renderSelectedPipelineVersion);
 
 document.getElementById("graph-type-filters").addEventListener("change", renderPipelineSvg);
 document.getElementById("graph-finding-filter").addEventListener("change", renderPipelineSvg);
@@ -115,14 +127,17 @@ document.getElementById("findings-list").addEventListener("click", (event) => {
     return;
   }
   if (button.dataset.findingAction === "source") {
+    showOriginalPipelineVersion();
     const cellIndex = finding.cell_indices[0];
     if (Number.isInteger(cellIndex)) {
       selectCell(cellIndex);
       window.location.hash = "#cells";
     }
   } else if (button.dataset.findingAction === "pipeline") {
+    showOriginalPipelineVersion();
     openFindingPipelineNode(finding, button.dataset.nodeId);
   } else if (button.dataset.findingAction === "path") {
+    showOriginalPipelineVersion();
     highlightGraphForFinding(finding);
   }
 });
@@ -350,7 +365,12 @@ uploadForm.addEventListener("submit", async (event) => {
     currentNotebookId = data.notebook_id;
     currentNotebookToken = data.access_token;
     correctedNotebookId = null;
+    correctedNotebookAnalysis = null;
+    currentTraceNotebook = null;
     currentExecutionId = null;
+    stopPairedExperimentPolling();
+    currentPairedExperimentId = null;
+    delete startPairedExperimentButton.dataset.busy;
     currentVerificationId = null;
     verificationOriginalExecution.replaceChildren(new Option("Select an execution", ""));
     verificationCorrectedExecution.replaceChildren(new Option("Select an execution", ""));
@@ -368,6 +388,13 @@ uploadForm.addEventListener("submit", async (event) => {
     );
     executionResult.classList.add("hidden");
     executionStatusMessage.textContent = "";
+    pairedExperimentList.replaceChildren();
+    pairedExperimentResults.replaceChildren();
+    showPairedExperimentStatus("", "hidden");
+    showPairedLaunchStatus("", "hidden");
+    pipelineVersionSelect.replaceChildren(new Option("Original notebook", "original"));
+    document.getElementById("pipeline-version-status").textContent = "";
+    updatePairedExperimentButtonState();
     resetRepairWorkflow();
     showNotebookSummary(data.notebook);
     if (!renderInvestigation(data.notebook)) {
@@ -400,7 +427,12 @@ document.getElementById("choose-another-notebook").addEventListener("click", () 
   currentNotebookId = null;
   currentNotebookToken = null;
   correctedNotebookId = null;
+  correctedNotebookAnalysis = null;
+  currentTraceNotebook = null;
   currentExecutionId = null;
+  stopPairedExperimentPolling();
+  currentPairedExperimentId = null;
+  delete startPairedExperimentButton.dataset.busy;
   currentVerificationId = null;
   resetRepairWorkflow();
   verificationOriginalExecution.replaceChildren(new Option("Select an execution", ""));
@@ -415,12 +447,19 @@ document.getElementById("choose-another-notebook").addEventListener("click", () 
   executionDatasetList.replaceChildren();
   executionDatasetSelect.replaceChildren();
   executionDatasetForm.reset();
+  updatePairedExperimentButtonState();
   showExecutionDatasetMessage("", "hidden");
   executionNotebookSelect.replaceChildren(
     new Option("Original notebook", "original")
   );
   executionResult.classList.add("hidden");
   executionStatusMessage.textContent = "";
+  pairedExperimentList.replaceChildren();
+  pairedExperimentResults.replaceChildren();
+  showPairedExperimentStatus("", "hidden");
+  showPairedLaunchStatus("", "hidden");
+  pipelineVersionSelect.replaceChildren(new Option("Original notebook", "original"));
+  document.getElementById("pipeline-version-status").textContent = "";
   datasetForm.reset();
   resetDatasetAnalysis();
   uploadForm.reset();
@@ -535,6 +574,7 @@ executionDatasetForm.addEventListener("submit", async (event) => {
     executionDatasetList.appendChild(item);
     executionDatasetFile.value = "";
     showExecutionDatasetMessage("Dataset securely associated with this notebook.", "success");
+    updatePairedExperimentButtonState();
   } catch (error) {
     showExecutionDatasetMessage(
       error instanceof Error ? error.message : "The dataset could not be attached.",
@@ -606,6 +646,334 @@ executionForm.addEventListener("submit", async (event) => {
     startExecutionButton.textContent = "Start execution";
   }
 });
+
+executionDatasetSelect.addEventListener("change", updatePairedExperimentButtonState);
+
+startPairedExperimentButton.addEventListener("click", async () => {
+  if (!currentNotebookId || !currentNotebookToken || !correctedNotebookId) {
+    showPairedLaunchStatus(
+      "Generate and approve a corrected notebook before starting paired runs.",
+      "error"
+    );
+    return;
+  }
+  const datasetIds = [...executionDatasetSelect.selectedOptions].map((option) => option.value);
+  if (!datasetIds.length) {
+    showPairedLaunchStatus(
+      "Select at least one associated dataset so both experiments use the same inputs.",
+      "error"
+    );
+    return;
+  }
+
+  startPairedExperimentButton.disabled = true;
+  startPairedExperimentButton.dataset.busy = "true";
+  startPairedExperimentButton.textContent = "Starting paired runs…";
+  showPairedLaunchStatus("Starting two independent isolated executions…", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/paired-experiments`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `******`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          corrected_notebook_id: correctedNotebookId,
+          dataset_ids: datasetIds
+        })
+      }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "The paired experiments could not be started.");
+    }
+    if (!data.pair || typeof data.pair.pair_id !== "string") {
+      throw new Error("The server did not return a valid paired-experiment record.");
+    }
+    currentPairedExperimentId = data.pair.pair_id;
+    renderPairedExperiment(data);
+    showPairedLaunchStatus("Both experiment records are saved; execution status is shown below.", "success");
+    showPairedExperimentStatus(`Paired experiment ${data.pair.pair_id} is ${data.status}.`, "loading");
+    window.location.hash = "#verification";
+    schedulePairedExperimentPoll();
+  } catch (error) {
+    delete startPairedExperimentButton.dataset.busy;
+    showPairedLaunchStatus(
+      error instanceof Error ? error.message : "The paired experiments could not be started.",
+      "error"
+    );
+  } finally {
+    updatePairedExperimentButtonState();
+  }
+});
+
+loadPairedExperimentsButton.addEventListener("click", async () => {
+  if (!currentNotebookId || !currentNotebookToken) {
+    showPairedExperimentStatus("Upload a notebook before loading paired experiments.", "error");
+    return;
+  }
+  loadPairedExperimentsButton.disabled = true;
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/paired-experiments`,
+      { headers: { Authorization: `******` }, cache: "no-store" }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "Saved paired experiments could not be loaded.");
+    }
+    pairedExperimentList.replaceChildren();
+    if (!data.paired_experiments?.length) {
+      showPairedExperimentStatus("No paired experiments have been saved for this notebook.", "hidden");
+      return;
+    }
+    data.paired_experiments.forEach((pair) => {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "text-button";
+      button.textContent = `${new Date(pair.created_at).toLocaleString()} · Pair ${pair.pair_id.slice(0, 8)}`;
+      button.addEventListener("click", () => loadPairedExperiment(pair.pair_id));
+      item.appendChild(button);
+      pairedExperimentList.appendChild(item);
+    });
+    await loadPairedExperiment(data.paired_experiments[0].pair_id);
+  } catch (error) {
+    showPairedExperimentStatus(
+      error instanceof Error ? error.message : "Saved paired experiments could not be loaded.",
+      "error"
+    );
+  } finally {
+    loadPairedExperimentsButton.disabled = false;
+  }
+});
+
+async function loadPairedExperiment(pairId) {
+  currentPairedExperimentId = pairId;
+  showPairedExperimentStatus("Loading saved experiment records…", "loading");
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/paired-experiments/${encodeURIComponent(pairId)}`,
+      {
+        headers: { Authorization: `******` },
+        cache: "no-store"
+      }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "The paired experiment could not be loaded.");
+    }
+    renderPairedExperiment(data);
+    if (data.verification) {
+      if (currentVerificationId !== data.verification.verification_id) {
+        verificationResults.replaceChildren();
+        currentVerificationId = data.verification.verification_id;
+        renderVerification(data.verification);
+      }
+    }
+    if (["queued", "running"].includes(data.status)) {
+      startPairedExperimentButton.dataset.busy = "true";
+      updatePairedExperimentButtonState();
+      showPairedExperimentStatus(`Paired experiment ${data.status}.`, "loading");
+      schedulePairedExperimentPoll();
+    } else {
+      stopPairedExperimentPolling();
+      delete startPairedExperimentButton.dataset.busy;
+      updatePairedExperimentButtonState();
+      showPairedExperimentStatus(
+        `Paired experiment ${executionStatusLabel(data.status).toLowerCase()}.`,
+        data.status === "completed" ? "success" : "error"
+      );
+    }
+  } catch (error) {
+    stopPairedExperimentPolling();
+    showPairedExperimentStatus(
+      error instanceof Error ? error.message : "The paired experiment could not be loaded.",
+      "error"
+    );
+  }
+}
+
+function updatePairedExperimentButtonState() {
+  const hasDatasets = executionDatasetSelect.selectedOptions.length > 0;
+  const ready = Boolean(
+    currentNotebookId &&
+    currentNotebookToken &&
+    correctedNotebookId &&
+    hasDatasets &&
+    !startPairedExperimentButton.dataset.busy
+  );
+  startPairedExperimentButton.disabled = !ready;
+  startPairedExperimentButton.textContent = startPairedExperimentButton.dataset.busy
+    ? "Paired runs in progress…"
+    : "Start original + corrected runs";
+}
+
+function showPairedLaunchStatus(message, state) {
+  pairedExperimentLaunchStatus.textContent = message;
+  pairedExperimentLaunchStatus.className =
+    state === "hidden" ? "graph-status hidden" : `graph-status ${state}`;
+}
+
+function showPairedExperimentStatus(message, state) {
+  pairedExperimentStatus.textContent = message;
+  pairedExperimentStatus.className =
+    state === "hidden" ? "graph-status hidden" : `graph-status ${state}`;
+}
+
+function stopPairedExperimentPolling() {
+  if (pairedExperimentPollTimer !== null) {
+    window.clearTimeout(pairedExperimentPollTimer);
+    pairedExperimentPollTimer = null;
+  }
+}
+
+function schedulePairedExperimentPoll() {
+  stopPairedExperimentPolling();
+  pairedExperimentPollTimer = window.setTimeout(
+    () => loadPairedExperiment(currentPairedExperimentId),
+    1500
+  );
+}
+
+function renderPairedExperiment(data) {
+  pairedExperimentResults.replaceChildren();
+  const pair = data.pair;
+  const comparison = data.comparison || data.verification?.comparison;
+  const cards = document.createElement("div");
+  cards.className = "paired-experiment-cards";
+  cards.append(
+    renderPairedExecutionCard({
+      label: "Experiment A · Original",
+      badge: "Original",
+      execution: data.original_execution,
+      filename: data.notebooks?.original?.filename || currentNotebook?.filename,
+      metrics: comparison?.original_metrics,
+      setup: comparison?.original_setup
+    }),
+    renderPairedExecutionCard({
+      label: "Experiment B · Corrected",
+      badge: "Corrected",
+      execution: data.corrected_execution,
+      filename: data.notebooks?.corrected?.filename || "Corrected notebook",
+      metrics: comparison?.corrected_metrics,
+      setup: comparison?.corrected_setup
+    })
+  );
+  pairedExperimentResults.appendChild(cards);
+
+  const difference = document.createElement("section");
+  difference.className = "paired-difference-panel";
+  const heading = document.createElement("h4");
+  heading.textContent = "Evaluation difference · corrected − original";
+  difference.appendChild(heading);
+  if (!comparison) {
+    const pending = document.createElement("p");
+    pending.textContent = "Comparison and repair verification will be generated after both executions reach terminal states.";
+    difference.appendChild(pending);
+  } else {
+    const metrics = comparison.metric_comparisons || [];
+    if (!metrics.length) {
+      const unavailable = document.createElement("p");
+      unavailable.textContent = "Unavailable — no supported labeled evaluation metrics were captured.";
+      difference.appendChild(unavailable);
+    }
+    metrics.forEach((metric) => {
+      const row = document.createElement("p");
+      const score = metric.comparison_available
+        ? metric.difference_percentage_points?.length
+          ? `${formatMetricValues(metric.difference_percentage_points, "value")} percentage points`
+          : formatMetricValues(metric.deltas, metric.unit) || "Unavailable"
+        : "Unavailable";
+      row.textContent = `${metric.name}: ${score}${metric.comparison_available ? "" : ` · ${metric.reason || "experiment settings are not comparable"}`}`;
+      difference.appendChild(row);
+    });
+    if (!comparison.comparable && comparison.comparability_reasons?.length) {
+      appendVerificationList(
+        difference,
+        "Why a delta is withheld",
+        comparison.comparability_reasons,
+        "paired-comparability"
+      );
+    }
+    if (comparison.documented_changes?.length) {
+      appendVerificationList(
+        difference,
+        "Documented experiment changes",
+        comparison.documented_changes,
+        "paired-documented-changes"
+      );
+    }
+    const note = document.createElement("p");
+    note.className = "finding-caveat";
+    note.textContent = "A metric change is descriptive, not proof that the repair succeeded or that leakage alone caused the difference. Review the separate repair-verification evidence below.";
+    difference.appendChild(note);
+  }
+  pairedExperimentResults.appendChild(difference);
+}
+
+function renderPairedExecutionCard({ label, badge, execution, filename, metrics, setup }) {
+  const card = document.createElement("article");
+  card.className = "paired-experiment-card workspace-card";
+  const title = document.createElement("h4");
+  title.textContent = label;
+  const badgeLabel = document.createElement("span");
+  badgeLabel.className = `experiment-badge experiment-badge-${badge.toLowerCase()}`;
+  badgeLabel.textContent = badge;
+  const notebook = document.createElement("p");
+  notebook.textContent = filename || "Notebook name unavailable";
+  const status = document.createElement("p");
+  status.className = "finding-meta";
+  status.textContent = `Status: ${executionStatusLabel(execution?.status || "unknown")} · Execution: ${execution?.execution_id || "Unavailable"}`;
+  const details = document.createElement("dl");
+  details.className = "execution-metadata";
+  [
+    ["Duration", formatExecutionDuration(execution?.duration_seconds)],
+    ["Datasets", (execution?.dataset_references || []).map((item) => item.filename).join(", ") || "None attached"]
+  ].forEach(([name, value]) => {
+    const term = document.createElement("dt");
+    term.textContent = name;
+    const detail = document.createElement("dd");
+    detail.textContent = value;
+    details.append(term, detail);
+  });
+  const scores = document.createElement("div");
+  scores.className = "paired-metric-scores";
+  const metricHeading = document.createElement("strong");
+  metricHeading.textContent = "Actual captured evaluation metrics";
+  scores.appendChild(metricHeading);
+  if (metrics?.length) {
+    metrics.forEach((metric) => {
+      const value = document.createElement("p");
+      value.textContent = `${metric.name}: ${metric.value}${metric.unit === "percent" ? "%" : ""} · cell ${metric.cell_number ?? "unknown"}`;
+      scores.appendChild(value);
+    });
+  } else {
+    const unavailable = document.createElement("p");
+    unavailable.textContent = execution?.status === "completed"
+      ? "Unavailable — no supported labeled metric was captured."
+      : execution?.error_details?.message || "Unavailable — execution has not produced a completed metric.";
+    scores.appendChild(unavailable);
+  }
+  const summary = document.createElement("details");
+  const summaryLabel = document.createElement("summary");
+  summaryLabel.textContent = "Pipeline, split, and seed details";
+  const summaryText = document.createElement("pre");
+  summaryText.className = "execution-log";
+  summaryText.textContent = JSON.stringify(setup || {}, null, 2);
+  summary.append(summaryLabel, summaryText);
+  const logs = document.createElement("details");
+  const logLabel = document.createElement("summary");
+  logLabel.textContent = "Execution logs";
+  const logText = document.createElement("pre");
+  logText.className = "execution-log";
+  logText.textContent = execution?.logs || execution?.error_details?.message || "No execution logs were captured.";
+  logs.append(logLabel, logText);
+  card.append(title, badgeLabel, notebook, status, details, scores, summary, logs);
+  return card;
+}
 
 cancelExecutionButton.addEventListener("click", async () => {
   if (!currentExecutionId || !currentNotebookToken) {
@@ -1004,6 +1372,7 @@ function renderVerifiedFinding(item) {
     button.className = "text-button";
     button.textContent = `Open original cell ${reference.cell_index + 1}`;
     button.addEventListener("click", () => {
+      showOriginalPipelineVersion();
       selectCell(reference.cell_index);
       window.location.hash = "#cells";
     });
@@ -1152,7 +1521,9 @@ function renderExperimentComparison(comparison) {
       formatMetricValues(metric.original_values, metric.unit) || "Not captured",
       formatMetricValues(metric.corrected_values, metric.unit) || "Not captured",
       metric.comparison_available
-        ? formatMetricValues(metric.deltas, metric.unit)
+        ? metric.difference_percentage_points?.length
+          ? `${formatMetricValues(metric.difference_percentage_points, "value")} pp`
+          : formatMetricValues(metric.deltas, metric.unit)
         : "Unavailable"
     ].forEach((value) => {
       const cell = document.createElement("td");
@@ -1185,6 +1556,12 @@ function renderExperimentComparison(comparison) {
     "Execution configuration differences",
     comparison.setup_differences,
     "configuration-differences"
+  );
+  appendVerificationList(
+    section,
+    "Documented experiment changes",
+    comparison.documented_changes,
+    "documented-changes"
   );
   return section;
 }
@@ -1262,6 +1639,11 @@ overlapForm.addEventListener("submit", async (event) => {
         : `${check.check.replaceAll("_", " ")} · skipped: ${check.reason}`;
       overlapResults.appendChild(item);
     });
+    if (data.overlap.group_partition_visualization) {
+      overlapResults.appendChild(
+        renderGroupPartitionVisualization(data.overlap.group_partition_visualization)
+      );
+    }
     const findingCount = data.overlap.findings.length;
     showOverlapMessage(
       findingCount
@@ -1287,6 +1669,65 @@ function showUploadMessage(message, state) {
 function showDatasetMessage(message, state) {
   datasetUploadMessage.textContent = message;
   datasetUploadMessage.className = `upload-message ${state}`;
+}
+
+function renderGroupPartitionVisualization(visualization) {
+  const section = document.createElement("li");
+  section.className = "finding-card group-partition-visualization";
+  const heading = document.createElement("h4");
+  heading.textContent = "Uploaded split group-membership view";
+  const note = document.createElement("p");
+  note.textContent =
+    "These are actual memberships from the two CSV files you uploaded, not assignments captured from a notebook execution. Entity labels are temporary aliases; source identifiers are not returned.";
+  const partitions = document.createElement("div");
+  partitions.className = "group-partition-columns";
+  [
+    ["Training partition", visualization.train_groups],
+    ["Testing partition", visualization.test_groups]
+  ].forEach(([label, groups]) => {
+    const column = document.createElement("section");
+    const title = document.createElement("strong");
+    title.textContent = `${label} · ${groups.length} shown of ${
+      label.startsWith("Training")
+        ? visualization.train_group_count
+        : visualization.test_group_count
+    }`;
+    const list = document.createElement("ul");
+    (groups || []).forEach((group) => {
+      const item = document.createElement("li");
+      item.textContent = group;
+      if (visualization.overlap_groups?.includes(group)) {
+        item.className = "group-overlap-item";
+        item.setAttribute("aria-label", `${group} appears in both partitions`);
+      }
+      list.appendChild(item);
+    });
+    if (!groups?.length) {
+      const item = document.createElement("li");
+      item.textContent = "No configured group values.";
+      list.appendChild(item);
+    }
+    column.append(title, list);
+    partitions.appendChild(column);
+  });
+  const overlap = document.createElement("p");
+  overlap.className = visualization.overlap_count ? "verification-incomparable" : "verification-comparable";
+  overlap.textContent = visualization.overlap_count
+    ? `${visualization.overlap_count} group(s) overlap: ${visualization.overlap_groups.join(", ") || "some aliases are beyond the display limit"}.`
+    : "No group overlap was found between the uploaded CSV partitions.";
+  const correctionNote = document.createElement("p");
+  correctionNote.className = "finding-caveat";
+  correctionNote.textContent =
+    "CodeTrace does not rewrite a notebook from external CSV overlap alone. A corrected group partition is unavailable unless reliable group identifiers are linked to the notebook split; review the recommended group-aware strategy before making that change.";
+  section.append(heading, note, partitions, overlap);
+  if (visualization.truncated) {
+    const truncated = document.createElement("p");
+    truncated.className = "finding-meta";
+    truncated.textContent = "The visualization is limited to 30 anonymized group labels per partition.";
+    section.appendChild(truncated);
+  }
+  section.appendChild(correctionNote);
+  return section;
 }
 
 function showOverlapMessage(message, state) {
@@ -1522,11 +1963,37 @@ function renderInvestigation(notebook) {
   overlapMessage.textContent = "";
   overlapMessage.className = "upload-message hidden";
   renderPipelineTrace(analysis.pipeline_trace);
+  currentTraceNotebook = notebook;
+  pipelineVersionSelect.value = "original";
+  document.getElementById("pipeline-version-status").textContent =
+    "Showing the uploaded original notebook. Findings and repair proposals remain anchored to this source.";
   renderFindings(getCurrentFindings());
   renderRepairCenter(getCurrentRepairProposals());
   renderOverviewCells(notebook.cells);
   renderCells(notebook.cells);
   return true;
+}
+
+function renderSelectedPipelineVersion() {
+  const isCorrected = pipelineVersionSelect.value === "corrected";
+  const notebook = isCorrected ? correctedNotebookAnalysis : currentNotebook;
+  if (!notebook?.analysis?.pipeline_trace) {
+    pipelineVersionSelect.value = "original";
+    return;
+  }
+  currentTraceNotebook = notebook;
+  renderPipelineTrace(notebook.analysis.pipeline_trace);
+  renderCells(notebook.cells);
+  document.getElementById("pipeline-version-status").textContent = isCorrected
+    ? "Showing a fresh static analysis of the approved corrected notebook. The findings list remains anchored to the original upload."
+    : "Showing the uploaded original notebook. Findings and repair proposals remain anchored to this source.";
+}
+
+function showOriginalPipelineVersion() {
+  if (pipelineVersionSelect.value !== "original") {
+    pipelineVersionSelect.value = "original";
+    renderSelectedPipelineVersion();
+  }
 }
 
 function renderLibraries(libraries) {
@@ -1577,6 +2044,7 @@ function renderOverviewCells(cells) {
     inspect.className = "text-button notebook-cell-inspect";
     inspect.textContent = "Open in Cell Explorer";
     inspect.addEventListener("click", () => {
+      showOriginalPipelineVersion();
       selectCell(cell.index);
       window.location.hash = "#cells";
     });
@@ -2928,6 +3396,10 @@ document.getElementById("download-repaired-notebook").addEventListener("click", 
       throw new Error("The generated notebook could not be associated with this experiment.");
     }
     correctedNotebookId = generatedNotebookId;
+    correctedNotebookAnalysis = null;
+    pipelineVersionSelect.replaceChildren(new Option("Original notebook", "original"));
+    pipelineVersionSelect.value = "original";
+    renderSelectedPipelineVersion();
     let correctedOption = executionNotebookSelect.querySelector(
       'option[value="corrected"]'
     );
@@ -2937,6 +3409,39 @@ document.getElementById("download-repaired-notebook").addEventListener("click", 
     }
     correctedOption.textContent = "Approved corrected notebook";
     updateVerificationButtonState();
+    updatePairedExperimentButtonState();
+    let traceWarning = null;
+    try {
+      const analysisResponse = await fetch(
+        `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/versions/${encodeURIComponent(correctedNotebookId)}/analysis`,
+        { headers: { Authorization: `******` }, cache: "no-store" }
+      );
+      const analysisData = await analysisResponse.json();
+      if (!analysisResponse.ok) {
+        throw new Error(
+          analysisData?.detail?.message || "Corrected notebook analysis is unavailable."
+        );
+      }
+      if (
+        !analysisData.notebook?.analysis?.pipeline_trace ||
+        !Array.isArray(analysisData.notebook.cells)
+      ) {
+        throw new Error("The corrected notebook analysis response was incomplete.");
+      }
+      correctedNotebookAnalysis = analysisData.notebook;
+      pipelineVersionSelect.replaceChildren(
+        new Option("Original notebook", "original"),
+        new Option("Approved corrected notebook", "corrected")
+      );
+      pipelineVersionSelect.value = "corrected";
+      renderSelectedPipelineVersion();
+    } catch (error) {
+      traceWarning = error instanceof Error
+        ? error.message
+        : "Corrected notebook analysis is unavailable.";
+      document.getElementById("pipeline-version-status").textContent =
+        `The corrected notebook was generated, but its source trace could not be loaded: ${traceWarning}`;
+    }
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -2945,8 +3450,10 @@ document.getElementById("download-repaired-notebook").addEventListener("click", 
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    message.textContent = "Approved corrected notebook generated and downloaded. Starting its experiment still requires an explicit action in Experiments.";
-    message.className = "upload-message success";
+    message.textContent = traceWarning
+      ? `Approved corrected notebook generated and downloaded, but its pipeline trace could not be refreshed: ${traceWarning}`
+      : "Approved corrected notebook generated and downloaded. Its trace now reflects the corrected source; starting paired experiments still requires an explicit action in Experiments.";
+    message.className = traceWarning ? "upload-message error" : "upload-message success";
   } catch (error) {
     message.textContent = error instanceof Error ? error.message : "The corrected notebook could not be generated.";
     message.className = "upload-message error";
@@ -2973,10 +3480,11 @@ function renderCells(cells) {
 }
 
 function selectCell(index) {
-  if (!currentNotebook || !Number.isInteger(index) || !currentNotebook.cells[index]) {
+  const notebook = currentTraceNotebook || currentNotebook;
+  if (!notebook || !Number.isInteger(index) || !notebook.cells[index]) {
     return;
   }
-  const cell = currentNotebook.cells[index];
+  const cell = notebook.cells[index];
   cellSelector.value = String(index);
   cellMeta.textContent = `Cell ${cell.index + 1} · ${cell.cell_type}` +
     (cell.cell_type === "code"

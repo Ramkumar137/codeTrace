@@ -9,6 +9,11 @@ class ExecutionRequest(BaseModel):
     dataset_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
+class PairedExecutionRequest(BaseModel):
+    corrected_notebook_id: str
+    dataset_ids: list[str] = Field(min_length=1, max_length=20)
+
+
 class ExecutionStatusResponse(BaseModel):
     execution_id: str
     notebook_id: str

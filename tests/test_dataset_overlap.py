@@ -72,8 +72,13 @@ def test_configured_group_overlap_is_reported():
     )
 
     finding = response.json()["overlap"]["findings"][0]
+    visualization = response.json()["overlap"]["group_partition_visualization"]
     assert finding["id"] == "train_test_group_overlap"
     assert finding["severity"] == "high"
+    assert visualization["execution_partition_assignments"] is False
+    assert visualization["overlap_count"] == 1
+    assert visualization["overlap_groups"] == ["Entity 001"]
+    assert "ward-a" not in response.text
 
 
 def test_unseen_group_objective_explains_group_overlap_conflict():
