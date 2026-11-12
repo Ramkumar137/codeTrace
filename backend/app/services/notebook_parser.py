@@ -42,7 +42,11 @@ class NotebookParseError(Exception):
         self.status_code = status_code
 
 
-def parse_notebook(filename: str, content: bytes) -> dict[str, Any]:
+def parse_notebook(
+    filename: str,
+    content: bytes,
+    research_objective: str | None = None,
+) -> dict[str, Any]:
     """Validate an nbformat v4 notebook and return source-only metadata."""
     try:
         text = content.decode("utf-8-sig")
@@ -129,7 +133,7 @@ def parse_notebook(filename: str, content: bytes) -> dict[str, Any]:
         "raw_cells": counts["raw"],
         "cells": cells,
     }
-    result["analysis"] = analyze_notebook(cells)
+    result["analysis"] = analyze_notebook(cells, research_objective)
     result["analysis"]["pipeline_trace"] = build_pipeline_trace(
         result["analysis"], cells
     )

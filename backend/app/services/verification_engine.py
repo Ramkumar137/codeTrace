@@ -552,12 +552,21 @@ def _verify_repair(
     evidence.extend(
         _execution_evidence(original_execution, corrected_execution)
     )
+    normalized_status = {
+        "verified": "verified",
+        "partially_verified": "partially_verified",
+        "inconclusive": "inconclusive",
+        "not_verified": "failed",
+        "execution_failed": "failed",
+        "not_applicable": "inconclusive",
+    }.get(status, "inconclusive")
     return {
         "finding_id": finding.get("id"),
         "finding_category": finding.get("category", "unknown"),
         "finding_title": finding.get("title", "Finding"),
         "repair_id": repair["repair_id"],
         "verification_status": status,
+        "verification_status_normalized": normalized_status,
         "original_cell_references": original_refs,
         "corrected_cell_references": corrected_refs,
         "execution_ids": {

@@ -288,4 +288,9 @@ def build_pipeline_trace(
         "edges": edges,
         "findings": findings_output,
         "unresolved_references": unresolved_references,
+        "lineage_nodes": analysis.get("variable_lineage", {}).get("nodes", []),
+        "lineage_edges": analysis.get("variable_lineage", {}).get("edges", []),
+        "lineage_trace_type": analysis.get("variable_lineage", {}).get(
+            "trace_type", "unavailable"
+        ),
     }

@@ -60,6 +60,7 @@ class ExecutionStore:
                 notebook_type TEXT NOT NULL,
                 filename TEXT NOT NULL,
                 content BLOB NOT NULL,
+                research_objective TEXT NOT NULL DEFAULT 'unspecified',
                 access_token_hash TEXT NOT NULL,
                 approved INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
@@ -77,6 +78,14 @@ class ExecutionStore:
             )
             """
         )
+        notebook_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(notebooks)")
+        }
+        if "research_objective" not in notebook_columns:
+            connection.execute(
+                "ALTER TABLE notebooks ADD COLUMN research_objective "
+                "TEXT NOT NULL DEFAULT 'unspecified'"
+            )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS executions (
@@ -97,10 +106,18 @@ class ExecutionStore:
                 outputs TEXT NOT NULL DEFAULT '[]',
                 logs TEXT NOT NULL DEFAULT '',
                 artifact BLOB,
+                artifact_checksum TEXT,
                 created_at TEXT NOT NULL
             )
             """
         )
+        execution_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(executions)")
+        }
+        if "artifact_checksum" not in execution_columns:
+            connection.execute(
+                "ALTER TABLE executions ADD COLUMN artifact_checksum TEXT"
+            )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS corrected_repairs (
@@ -161,6 +178,16 @@ class ExecutionStore:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS experiment_history (
+                experiment_id TEXT PRIMARY KEY,
+                notebook_id TEXT NOT NULL REFERENCES notebooks(notebook_id),
+                timestamp TEXT NOT NULL,
+                record TEXT NOT NULL
+            )
+            """
+        )
         connection.commit()
         try:
             yield connection
@@ -172,7 +199,10 @@ class ExecutionStore:
             connection.close()
 
     def create_original_notebook(
-        self, filename: str, content: bytes
+        self,
+        filename: str,
+        content: bytes,
+        research_objective: str = "unspecified",
     ) -> tuple[str, str]:
         notebook_id = str(uuid.uuid4())
         access_token = secrets.token_urlsafe(32)
@@ -181,10 +211,17 @@ class ExecutionStore:
                 """
                 INSERT INTO notebooks
                     (notebook_id, notebook_type, filename, content,
-                     access_token_hash, created_at)
-                VALUES (?, 'original', ?, ?, ?, ?)
+                     research_objective, access_token_hash, created_at)
+                VALUES (?, 'original', ?, ?, ?, ?, ?)
                 """,
-                (notebook_id, filename, content, _access_hash(access_token), _now()),
+                (
+                    notebook_id,
+                    filename,
+                    content,
+                    research_objective,
+                    _access_hash(access_token),
+                    _now(),
+                ),
             )
         return notebook_id, access_token
 
@@ -220,14 +257,15 @@ class ExecutionStore:
                 """
                 INSERT INTO notebooks
                     (notebook_id, original_notebook_id, notebook_type, filename,
-                     content, access_token_hash, approved, created_at)
-                VALUES (?, ?, 'corrected', ?, ?, ?, 1, ?)
+                     content, research_objective, access_token_hash, approved, created_at)
+                VALUES (?, ?, 'corrected', ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     notebook_id,
                     original["notebook_id"],
                     filename,
                     content,
+                    original.get("research_objective", "unspecified"),
                     original["access_token_hash"],
                     _now(),
                 ),
@@ -295,6 +333,52 @@ class ExecutionStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def create_experiment_history(
+        self, notebook_id: str, access_token: str, record: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        notebook = self.get_notebook(notebook_id, access_token)
+        if notebook is None or notebook["notebook_type"] != "original":
+            return None
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO experiment_history
+                    (experiment_id, notebook_id, timestamp, record)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    record["experiment_id"],
+                    notebook_id,
+                    record["timestamp"],
+                    json.dumps(record, ensure_ascii=False),
+                ),
+            )
+        return record
+
+    def list_experiment_history(
+        self, notebook_id: str, access_token: str
+    ) -> list[dict[str, Any]] | None:
+        notebook = self.get_notebook(notebook_id, access_token)
+        if notebook is None:
+            return None
+        original_notebook_id = (
+            notebook["original_notebook_id"]
+            if notebook["notebook_type"] == "corrected"
+            else notebook_id
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.record
+                FROM experiment_history e
+                JOIN notebooks n ON n.notebook_id = e.notebook_id
+                WHERE e.notebook_id = ?
+                ORDER BY e.timestamp, e.experiment_id
+                """,
+                (original_notebook_id,),
+            ).fetchall()
+        return [json.loads(row["record"]) for row in rows]
+
     def get_datasets(
         self, notebook_id: str, dataset_ids: list[str]
     ) -> list[dict[str, Any]] | None:
@@ -356,6 +440,7 @@ class ExecutionStore:
             "outputs",
             "logs",
             "artifact",
+            "artifact_checksum",
         }
         updates: dict[str, Any] = {}
         for key, value in fields.items():
@@ -672,7 +757,7 @@ class ExecutionStore:
                 """
                 SELECT n.notebook_id, n.original_notebook_id, n.notebook_type,
                        n.filename, n.content, n.access_token_hash,
-                       n.approved, n.created_at
+                       n.approved, n.created_at, n.research_objective
                 FROM notebooks n
                 JOIN notebooks root
                   ON root.notebook_id = n.notebook_id
@@ -716,6 +801,9 @@ class ExecutionStore:
             "notebook_type": artifact_notebook["notebook_type"],
             "filename": artifact_notebook["filename"],
             "content": bytes(artifact_notebook["content"]),
+            "research_objective": artifact_notebook.get(
+                "research_objective", "unspecified"
+            ),
         }
 
     def create_report(self, report: dict[str, Any], html_artifact: bytes, pdf_artifact: bytes) -> None:

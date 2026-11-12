@@ -1,0 +1,55 @@
+{
+  "cases": [
+    {
+      "name": "preprocessing-leakage",
+      "notebook": "preprocessing_leakage.ipynb",
+      "expected_findings": ["preprocessing_fit_before_split"]
+    },
+    {
+      "name": "target-leakage",
+      "notebook": "target_leakage.ipynb",
+      "expected_findings": ["target_column_in_features"]
+    },
+    {
+      "name": "entity-group-overlap",
+      "notebook": "entity_group_leakage.ipynb",
+      "expected_findings": ["train_test_group_overlap"],
+      "train_csv": "entity_train.csv",
+      "test_csv": "entity_test.csv",
+      "evaluation_objective": "unseen_groups",
+      "group_column": "student_id"
+    },
+    {
+      "name": "temporal-leakage",
+      "notebook": "temporal_leakage.ipynb",
+      "expected_findings": [
+        "random_split_for_forecasting",
+        "temporal_ordering_missing_before_split"
+      ],
+      "research_objective": "forecasting"
+    },
+    {
+      "name": "test-set-contamination",
+      "notebook": "test_set_contamination.ipynb",
+      "expected_findings": ["test_metric_used_for_model_selection"]
+    },
+    {
+      "name": "clean-pipeline",
+      "notebook": "clean_pipeline.ipynb",
+      "expected_findings": []
+    },
+    {
+      "name": "multiple-leakage",
+      "notebook": "multiple_leakage.ipynb",
+      "expected_findings": [
+        "preprocessing_fit_before_split",
+        "target_column_in_features"
+      ]
+    },
+    {
+      "name": "date-column-false-positive",
+      "notebook": "date_column_false_positive.ipynb",
+      "expected_findings": []
+    }
+  ]
+}

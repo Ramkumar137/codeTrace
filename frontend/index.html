@@ -47,6 +47,13 @@
         <form class="upload-card" id="upload-form">
           <label class="upload-label" for="notebook-file">Notebook file</label>
           <p class="upload-hint" id="upload-hint">Select a Jupyter Notebook (.ipynb), up to 10 MB.</p>
+          <label class="upload-label" for="research-objective">Research objective</label>
+          <select id="research-objective" name="research_objective">
+            <option value="unspecified">Not specified</option>
+            <option value="generalization">Generalize to new independent rows</option>
+            <option value="unseen_entities">Generalize to unseen entities</option>
+            <option value="forecasting">Predict future observations (forecasting)</option>
+          </select>
           <input
             class="upload-input"
             id="notebook-file"
@@ -255,6 +262,9 @@
             <ul id="graph-edges" class="compact-list"></ul>
             <h3>Unresolved inputs</h3>
             <ul id="graph-unresolved" class="compact-list"></ul>
+            <h3>Variable versions and source lineage</h3>
+            <p class="card-note">Static AST relationships only; aliases and source order do not establish runtime values.</p>
+            <ul id="lineage-nodes" class="compact-list"></ul>
           </details>
           <p class="caveat-note">Green means no supported issue was detected at that operation; it does not guarantee pipeline safety. Potential findings are amber. Red is reserved for explicitly confirmed findings; existing static checks produce potential findings only. Grey indicates fallback/unknown evidence.</p>
         </section>
@@ -307,6 +317,8 @@
               <p class="upload-message hidden" id="overlap-message" role="status" aria-live="polite"></p>
             </form>
             <ul id="overlap-results" class="finding-list"></ul>
+            <h4>Possible entity columns (confirm before use)</h4>
+            <ul id="overlap-entity-candidates" class="compact-list"></ul>
           </section>
         </section>
 
@@ -371,6 +383,44 @@
               </details>
             </div>
           </form>
+          <section class="workspace-card execution-card" aria-labelledby="history-heading">
+            <h3 id="history-heading">Record experiment history</h3>
+            <p class="card-note">Record test or validation decisions as they happen. Repeated test-driven selection is flagged only when multiple history entries support it.</p>
+            <form id="experiment-history-form">
+              <label class="upload-label" for="history-dataset-version">Dataset version label</label>
+              <input id="history-dataset-version" name="dataset_version" type="text" maxlength="200" required placeholder="e.g. cohort-v2">
+              <label class="upload-label" for="history-model-name">Model name</label>
+              <input id="history-model-name" name="model_name" type="text" maxlength="200" required>
+              <label class="upload-label" for="history-hyperparameters">Hyperparameters (JSON)</label>
+              <textarea id="history-hyperparameters" name="hyperparameters" rows="3">{}</textarea>
+              <label class="upload-label" for="history-training-ref">Training data reference</label>
+              <input id="history-training-ref" name="training_data_reference" type="text" maxlength="300" required placeholder="train">
+              <label class="upload-label" for="history-validation-ref">Validation data reference (optional)</label>
+              <input id="history-validation-ref" name="validation_data_reference" type="text" maxlength="300">
+              <label class="upload-label" for="history-test-ref">Test data reference (optional)</label>
+              <input id="history-test-ref" name="test_data_reference" type="text" maxlength="300">
+              <label class="upload-label" for="history-metric">Evaluation metric and value</label>
+              <div class="overlap-identifier-fields">
+                <input id="history-metric" name="evaluation_metric" type="text" maxlength="100" required placeholder="accuracy">
+                <input id="history-metric-value" name="metric_value" type="number" step="any" required>
+              </div>
+              <label class="upload-label" for="history-decision">Model-selection decision</label>
+              <select id="history-decision" name="model_selection_decision">
+                <option value="final_evaluation">Final test evaluation only</option>
+                <option value="selected">Selected based on this result</option>
+                <option value="rejected">Rejected based on this result</option>
+                <option value="validation_selected">Selected using validation</option>
+                <option value="cv_selected">Selected using cross-validation</option>
+                <option value="candidate">Candidate, no selection decision</option>
+                <option value="not_used_for_selection">Not used for model selection</option>
+              </select>
+              <button class="btn" type="submit">Save experiment record</button>
+              <button class="text-button" id="load-experiment-history" type="button">Load saved history</button>
+            </form>
+            <p id="experiment-history-status" class="graph-status" role="status" aria-live="polite"></p>
+            <ul id="experiment-history-findings" class="finding-list"></ul>
+            <ul id="experiment-history-records" class="compact-list"></ul>
+          </section>
           <section class="workspace-card paired-launch-card" aria-labelledby="paired-launch-heading">
             <h3 id="paired-launch-heading">Run a paired experiment</h3>
             <p class="card-note">After approving a correction, run the original and corrected versions with the same explicitly selected dataset files. Both runs remain separate Docker executions.</p>

@@ -35,6 +35,11 @@ const executionDatasetList = document.getElementById("execution-datasets");
 const executionDatasetSelect = document.getElementById("execution-dataset-select");
 const executionNotebookSelect = document.getElementById("execution-notebook");
 const executionForm = document.getElementById("execution-form");
+const experimentHistoryForm = document.getElementById("experiment-history-form");
+const experimentHistoryStatus = document.getElementById("experiment-history-status");
+const experimentHistoryFindings = document.getElementById("experiment-history-findings");
+const experimentHistoryRecords = document.getElementById("experiment-history-records");
+const loadExperimentHistoryButton = document.getElementById("load-experiment-history");
 const startExecutionButton = document.getElementById("start-execution-btn");
 const startPairedExperimentButton = document.getElementById("start-paired-experiment");
 const pairedExperimentLaunchStatus = document.getElementById("paired-experiment-launch-status");
@@ -329,6 +334,10 @@ uploadForm.addEventListener("submit", async (event) => {
   try {
     const formData = new FormData();
     formData.append("file", selectedFile);
+    formData.append(
+      "research_objective",
+      document.getElementById("research-objective").value
+    );
     const response = await fetch(`${API_BASE_URL}/api/notebooks/upload`, {
       method: "POST",
       body: formData
@@ -648,6 +657,107 @@ executionForm.addEventListener("submit", async (event) => {
 });
 
 executionDatasetSelect.addEventListener("change", updatePairedExperimentButtonState);
+
+experimentHistoryForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!currentNotebookId || !currentNotebookToken) {
+    experimentHistoryStatus.textContent = "Upload a notebook before recording experiment history.";
+    return;
+  }
+  const form = new FormData(experimentHistoryForm);
+  let hyperparameters;
+  try {
+    hyperparameters = JSON.parse(String(form.get("hyperparameters") || "{}"));
+    if (!hyperparameters || typeof hyperparameters !== "object" || Array.isArray(hyperparameters)) {
+      throw new Error("Hyperparameters must be a JSON object.");
+    }
+  } catch (error) {
+    experimentHistoryStatus.textContent =
+      error instanceof Error ? error.message : "Hyperparameters must be valid JSON.";
+    return;
+  }
+  const validationRef = String(form.get("validation_data_reference") || "").trim();
+  const testRef = String(form.get("test_data_reference") || "").trim();
+  const payload = {
+    dataset_version: String(form.get("dataset_version") || "").trim(),
+    model_name: String(form.get("model_name") || "").trim(),
+    hyperparameters,
+    training_data_reference: String(form.get("training_data_reference") || "").trim(),
+    validation_data_reference: validationRef || null,
+    test_data_reference: testRef || null,
+    evaluation_metric: String(form.get("evaluation_metric") || "").trim(),
+    metric_value: Number(form.get("metric_value")),
+    model_selection_decision: String(form.get("model_selection_decision"))
+  };
+  experimentHistoryStatus.textContent = "Saving recorded experiment…";
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/experiment-history`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `******`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "The experiment record could not be saved.");
+    }
+    renderExperimentHistory(data.experiments || [], data.analysis);
+    experimentHistoryStatus.textContent =
+      `Experiment ${data.experiment.experiment_id} saved with a dataset fingerprint.`;
+  } catch (error) {
+    experimentHistoryStatus.textContent =
+      error instanceof Error ? error.message : "The experiment record could not be saved.";
+  }
+});
+
+loadExperimentHistoryButton.addEventListener("click", async () => {
+  if (!currentNotebookId || !currentNotebookToken) {
+    experimentHistoryStatus.textContent = "Upload a notebook before loading experiment history.";
+    return;
+  }
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/notebooks/${encodeURIComponent(currentNotebookId)}/experiment-history`,
+      { headers: { Authorization: `******` }, cache: "no-store" }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail?.message || "Experiment history could not be loaded.");
+    }
+    renderExperimentHistory(data.experiments, data.analysis);
+    experimentHistoryStatus.textContent = `${data.experiments.length} experiment record(s) loaded.`;
+  } catch (error) {
+    experimentHistoryStatus.textContent =
+      error instanceof Error ? error.message : "Experiment history could not be loaded.";
+  }
+});
+
+function renderExperimentHistory(records, analysis) {
+  experimentHistoryRecords.replaceChildren();
+  records.forEach((record) => {
+    const item = document.createElement("li");
+    item.textContent =
+      `${record.timestamp} · ${record.model_name} · ${record.evaluation_metric}=${record.metric_value} · ` +
+      `${record.model_selection_decision} · dataset ${record.dataset_fingerprint.slice(0, 12)}`;
+    experimentHistoryRecords.appendChild(item);
+  });
+  experimentHistoryFindings.replaceChildren();
+  (analysis?.findings || []).forEach((finding) => {
+    const item = document.createElement("li");
+    item.className = "finding-card";
+    item.textContent = `${finding.severity} · ${finding.title} · ${finding.explanation}`;
+    experimentHistoryFindings.appendChild(item);
+  });
+  if (currentNotebook?.analysis) {
+    currentNotebook.analysis.experiment_history_findings = analysis?.findings || [];
+    renderFindings(getCurrentFindings());
+  }
+}
 
 startPairedExperimentButton.addEventListener("click", async () => {
   if (!currentNotebookId || !currentNotebookToken || !correctedNotebookId) {
@@ -1631,6 +1741,13 @@ overlapForm.addEventListener("submit", async (event) => {
     objectiveReview.textContent =
       `Evaluation objective · ${data.overlap.objective_review.message}`;
     overlapResults.appendChild(objectiveReview);
+    renderList(
+      "overlap-entity-candidates",
+      (data.overlap.entity_column_candidates || []).map((candidate) =>
+        `${candidate.column} · ${candidate.value_shape} values · ${candidate.reason} User confirmation required.`
+      ),
+      "No identifier-like columns suggested. This does not rule out entity structure."
+    );
     data.overlap.checks.forEach((check) => {
       const item = document.createElement("li");
       item.className = "finding-card";
@@ -2534,6 +2651,17 @@ function renderPipelineTrace(graph) {
     ),
     "No unresolved input variables."
   );
+  renderList(
+    "lineage-nodes",
+    (graph.lineage_nodes || []).map((node) =>
+      `${node.variable} v${node.version} · ${node.operation_type} · ` +
+      `${node.dataset_partition || "partition unknown"} · ` +
+      `cell ${node.cell_index + 1}:${node.line} · ` +
+      `parents: ${(node.parent_variables || []).join(", ") || "none"} · ` +
+      `${node.confidence} confidence`
+    ),
+    "No top-level variable assignments were traced."
+  );
   status.textContent = graph.nodes.length
     ? `${graph.nodes.length} recognized operation(s), ${graph.edges.length} source-supported dependency edge(s).`
     : "Analysis completed; no supported operation was detected.";
@@ -3059,7 +3187,8 @@ function getCurrentFindings() {
   }
   return [
     ...(currentNotebook.analysis.findings || []),
-    ...(currentNotebook.analysis.external_dataset_findings || [])
+    ...(currentNotebook.analysis.external_dataset_findings || []),
+    ...(currentNotebook.analysis.experiment_history_findings || [])
   ];
 }
 
@@ -3136,6 +3265,12 @@ function renderFindings(findings) {
     explanation.className = "finding-description";
     explanation.textContent = `${finding.risk_explanation || finding.explanation} Recommended correction: ${finding.recommendation}`;
     item.append(heading, meta, description, variables, explanation);
+    if (finding.potential_impact) {
+      const impact = document.createElement("p");
+      impact.className = "finding-meta";
+      impact.textContent = `Potential impact: ${finding.potential_impact}`;
+      item.appendChild(impact);
+    }
 
     const evidence = finding.source_code_evidence || finding.evidence || [];
     evidence.forEach((reference) => {
@@ -3374,6 +3509,10 @@ document.getElementById("download-repaired-notebook").addEventListener("click", 
     formData.append("file", currentNotebookFile);
     formData.append("repair_ids", JSON.stringify(approvedIds));
     formData.append("notebook_id", currentNotebookId);
+    formData.append(
+      "research_objective",
+      currentNotebook.analysis?.temporal_analysis?.objective || "unspecified"
+    );
     const response = await fetch(`${API_BASE_URL}/api/notebooks/repairs/generate`, {
       method: "POST",
       headers: { Authorization: `Bearer ${currentNotebookToken}` },

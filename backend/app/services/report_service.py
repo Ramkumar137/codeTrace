@@ -21,6 +21,7 @@ from reportlab.platypus import (
 )
 
 from backend.app.services.execution_store import ExecutionStore
+from backend.app.services.experiment_tracker import analyze_experiment_history
 from backend.app.services.notebook_parser import NotebookParseError, parse_notebook
 
 
@@ -181,6 +182,11 @@ def _analysis_report(
         "libraries": analysis.get("libraries", []),
         "dataset_references": analysis.get("dataset_references", []),
         "operations": analysis.get("all_operations", []),
+        "research_objective": analysis.get("temporal_analysis", {}).get(
+            "objective", "unspecified"
+        ),
+        "temporal_analysis": analysis.get("temporal_analysis", {}),
+        "variable_lineage": analysis.get("variable_lineage", {}),
         "analysis_limitations": analysis.get("limitations", []),
         "confidence_definitions": analysis.get("confidence_definitions", {}),
         "severity_definitions": analysis.get("severity_definitions", {}),
@@ -223,7 +229,11 @@ def build_report_data(
         raise ReportGenerationError("Reports can only be generated for an original notebook.")
 
     try:
-        parsed = parse_notebook(original["filename"], original["content"])
+        parsed = parse_notebook(
+            original["filename"],
+            original["content"],
+            original.get("research_objective"),
+        )
     except NotebookParseError as error:
         raise ReportGenerationError(
             "The stored notebook could not be analyzed for reporting."
@@ -235,8 +245,10 @@ def build_report_data(
     analysis_section, findings, pipeline_section = _analysis_report(original, parsed)
     executions = store.list_executions(notebook_id, access_token)
     verifications = store.list_verifications(notebook_id, access_token)
-    if executions is None or verifications is None:
+    experiment_history = store.list_experiment_history(notebook_id, access_token)
+    if executions is None or verifications is None or experiment_history is None:
         raise ReportGenerationError("Persisted workflow records could not be loaded.")
+    experiment_history_analysis = analyze_experiment_history(experiment_history)
     versions_by_id = {version["notebook_id"]: version for version in versions}
     executions_by_id = {
         execution["execution_id"]: execution for execution in executions
@@ -464,6 +476,7 @@ def build_report_data(
             "approved_repair_applications_count": approved_applications,
             "completed_executions_count": executions_completed,
             "execution_status_summary": execution_status_counts,
+            "recorded_experiments_count": len(experiment_history),
             "verification_status_summary": verification_counts,
         },
         "sections": {
@@ -479,6 +492,16 @@ def build_report_data(
                 "available" if executions else "not_performed",
                 execution_records,
                 None if executions else "No persisted experiment executions exist.",
+            ),
+            "experiment_history": _section(
+                "available" if experiment_history else "not_performed",
+                {
+                    "records": experiment_history,
+                    "analysis": experiment_history_analysis,
+                },
+                None
+                if experiment_history
+                else "No manually recorded experiment-history entries exist.",
             ),
             "repair_verification": _section(
                 "available" if verifications else "not_performed",
@@ -584,6 +607,7 @@ def render_html_report(report: dict[str, Any]) -> bytes:
         ("findings", "Findings and Evidence"),
         ("repair_summary", "Repair Summary"),
         ("experiment_execution_results", "Experiment Execution Results"),
+        ("experiment_history", "Recorded Experiment History"),
         ("repair_verification", "Repair Verification"),
         ("experiment_comparison", "Experiment Comparison"),
         ("available_artifacts", "Available Artifacts"),

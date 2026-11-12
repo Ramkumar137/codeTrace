@@ -11,15 +11,20 @@ The repository is in a working state for the implemented CodeTrace workflow. It 
 - FastAPI backend with health and API routes
 - Notebook upload and validation for Jupyter Notebook v4 files
 - Static analysis of imports, dataset references, and ML operations
+- Source-order variable lineage with aliases, reassignment versions, and cross-cell preprocessing-to-split evidence
+- Objective-aware temporal checks for selected random split, ordering, feature construction, and cross-validation patterns
 - Pipeline graph generation from recognized operations and variable references
 - Leakage and evaluation detection for supported static patterns
-- CSV profiling and train/test overlap analysis
+- CSV profiling, exact-row overlap checks, and user-configured identifier/group overlap analysis
+- Notebook-scoped experiment-history persistence, dataset fingerprints, and repeated test-selection findings
+- Standardized confidence/evidence fields and normalized verification statuses alongside compatible legacy statuses
 - Repair proposals for narrow, deterministic patterns
 - Separate corrected-notebook generation without overwriting the original upload
-- Isolated Docker-backed execution workflow
+- Isolated Docker-backed execution workflow with pinned default image tag, resource controls, path validation, cleanup, and artifact checksums
 - Verification and comparison against execution records
 - Evidence report generation in HTML, PDF, and JSON
 - Frontend pages for summary, overview, pipeline, audit, repair, experiments, verification, and reports
+- Synthetic benchmark fixtures and a runner that produces JSON metrics and a readable report
 
 ## Implemented strengths
 
@@ -32,12 +37,15 @@ The repository is in a working state for the implemented CodeTrace workflow. It 
 
 ## Intentionally bounded areas
 
-- Source-only analysis: no runtime notebook execution during parsing, graph construction, or most review flows
+- Lineage covers recognized top-level assignments in source cell order; control flow, dynamic code, shared-object mutation, and actual runtime row membership are not modeled
+- Temporal analysis requires objective/context evidence and cannot infer the authoritative timestamp, horizon, or valid split protocol
 - Findings are evidence-backed signals, not confirmed runtime defects
 - Repair generation remains limited to narrow, deterministic patterns
 - Unsupported or context-dependent findings are routed to manual review or not repairable status
-- Dataset overlap checks are request-scoped and not automatically combined with notebook source semantics
+- Dataset overlap compares only explicitly uploaded CSV pairs; ID-like candidate columns require user confirmation and are not automatically joined to notebook variables
+- Experiment-history results include only entries explicitly recorded in CodeTrace; external tuning decisions are invisible
 - Verification is only as strong as the captured execution evidence and comparability details
+- Benchmark fixtures are small and synthetic; their metrics do not establish production detection quality. The verification benchmark only checks conservative handling of unavailable execution and is not an overall verification-accuracy estimate.
 
 ## Project maturity and caveats
 
@@ -51,14 +59,16 @@ Command:
 python -m pytest tests -q
 ```
 
-Actual result: 154 passed, 1 warning.
-
-The warning is a Starlette/AnyIO deprecation warning from the test client and does not indicate a failed test.
+Actual result after the feature changes: **172 passed**, with 2 deprecation warnings from the Starlette/httpx and AnyIO test-client dependencies.
 
 ## Overall project status
 
 The repository is in a working state for the implemented CodeTrace workflow. It is suitable for static notebook review, controlled repair proposals, and explicit isolated execution when configured. It is not a full autonomous safety system and should be used with that limitation in mind.
 
-## Next realistic direction
+## Remaining work
 
-The project is already aligned around the evidence-first review model. The next logical progression would be to continue refining the supported rule set, improve human-readable diagnostics, and expand narrowly safe repair coverage while keeping the overall safety posture unchanged.
+- Broaden fixture coverage and validate detection/repair against independently authored, reviewed notebook cases.
+- Extend lineage and temporal checks beyond top-level static patterns without executing untrusted code during analysis.
+- Add objective-specific group/temporal split policies only when the user confirms the intended evaluation population.
+- Improve verification coverage for supported repair categories and keep runtime execution evidence separate from static source claims.
+- Evaluate on a larger reviewed synthetic benchmark before making performance claims.

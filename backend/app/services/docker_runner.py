@@ -1,6 +1,7 @@
 """Docker-only execution runner for untrusted notebook code."""
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ MAX_CAPTURED_LOG_BYTES = 16_000
 MAX_EXECUTED_NOTEBOOK_BYTES = 12 * 1024 * 1024
 MAX_RESULT_FILE_BYTES = MAX_NOTEBOOK_OUTPUT_BYTES * 8 + 512 * 1024
 RUNNER_IMAGE = os.environ.get(
-    "CODETRACE_EXECUTION_IMAGE", "codetrace-notebook-runner:latest"
+    "CODETRACE_EXECUTION_IMAGE", "codetrace-notebook-runner:1.0.0"
 )
 
 RUNNER_LIMITS: dict[str, Any] = {
@@ -50,6 +51,10 @@ class DockerRunner:
         timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS,
         docker_command: str = "docker",
     ) -> None:
+        if image.endswith(":latest"):
+            raise ValueError(
+                "The CodeTrace runner image must use a pinned version tag or digest."
+            )
         self.image = image
         self.timeout_seconds = timeout_seconds
         self.docker_command = docker_command
@@ -103,9 +108,17 @@ class DockerRunner:
             for dataset in datasets:
                 filename = self._safe_filename(str(dataset["filename"]))
                 if filename in seen_names:
-                    filename = f"{dataset['dataset_id'][:8]}-{filename}"
+                    dataset_prefix = re.sub(
+                        r"[^A-Za-z0-9]", "", str(dataset["dataset_id"])
+                    )[:8]
+                    filename = f"{dataset_prefix or 'dataset'}-{filename}"
+                target = input_dir / filename
+                if target.resolve().parent != input_dir.resolve() or target.is_symlink():
+                    raise DockerExecutionError(
+                        "An associated dataset resolved to an unsafe input path."
+                    )
                 seen_names.add(filename)
-                (input_dir / filename).write_bytes(bytes(dataset["content"]))
+                target.write_bytes(bytes(dataset["content"]))
                 dataset_names.append(filename)
 
             container_name = f"codetrace-{execution_id.replace('-', '')[:24]}"
@@ -190,6 +203,9 @@ class DockerRunner:
                     **result,
                     "status": status,
                     "artifact": executed_notebook,
+                    "artifact_checksum": hashlib.sha256(
+                        executed_notebook
+                    ).hexdigest(),
                     "logs": self._bounded_log(stdout, stderr),
                     "duration_seconds": round(
                         asyncio.get_running_loop().time() - started_at, 3
@@ -244,6 +260,19 @@ class DockerRunner:
     def _docker_run_command(
         self, container_name: str, input_dir: Path, dataset_names: list[str]
     ) -> list[str]:
+        input_dir = input_dir.resolve()
+        if not input_dir.is_dir() or "," in str(input_dir) or "\n" in str(input_dir):
+            raise DockerExecutionError(
+                "The isolated execution input directory is invalid."
+            )
+        if any(
+            not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", filename)
+            or Path(filename).name != filename
+            for filename in dataset_names
+        ):
+            raise DockerExecutionError(
+                "An associated dataset has an unsafe mounted filename."
+            )
         cpu_seconds = max(1, self.timeout_seconds)
         return [
             self.docker_command,

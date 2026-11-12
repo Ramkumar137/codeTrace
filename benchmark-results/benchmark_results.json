@@ -1,0 +1,140 @@
+{
+  "benchmark": "CodeTrace synthetic leakage fixtures",
+  "fixture_count": 8,
+  "fixtures": [
+    {
+      "baseline_findings": [
+        "preprocessing_fit_before_split"
+      ],
+      "enhanced_findings": [
+        "preprocessing_fit_before_split"
+      ],
+      "expected_findings": [
+        "preprocessing_fit_before_split"
+      ],
+      "name": "preprocessing-leakage"
+    },
+    {
+      "baseline_findings": [
+        "target_column_in_features"
+      ],
+      "enhanced_findings": [
+        "target_column_in_features"
+      ],
+      "expected_findings": [
+        "target_column_in_features"
+      ],
+      "name": "target-leakage"
+    },
+    {
+      "baseline_findings": [
+        "train_test_group_overlap"
+      ],
+      "enhanced_findings": [
+        "train_test_group_overlap"
+      ],
+      "expected_findings": [
+        "train_test_group_overlap"
+      ],
+      "name": "entity-group-overlap"
+    },
+    {
+      "baseline_findings": [],
+      "enhanced_findings": [
+        "random_split_for_forecasting",
+        "temporal_ordering_missing_before_split"
+      ],
+      "expected_findings": [
+        "random_split_for_forecasting",
+        "temporal_ordering_missing_before_split"
+      ],
+      "name": "temporal-leakage"
+    },
+    {
+      "baseline_findings": [
+        "test_metric_used_for_model_selection"
+      ],
+      "enhanced_findings": [
+        "test_metric_used_for_model_selection"
+      ],
+      "expected_findings": [
+        "test_metric_used_for_model_selection"
+      ],
+      "name": "test-set-contamination"
+    },
+    {
+      "baseline_findings": [],
+      "enhanced_findings": [],
+      "expected_findings": [],
+      "name": "clean-pipeline"
+    },
+    {
+      "baseline_findings": [
+        "preprocessing_fit_before_split",
+        "target_column_in_features"
+      ],
+      "enhanced_findings": [
+        "preprocessing_fit_before_split",
+        "target_column_in_features"
+      ],
+      "expected_findings": [
+        "preprocessing_fit_before_split",
+        "target_column_in_features"
+      ],
+      "name": "multiple-leakage"
+    },
+    {
+      "baseline_findings": [],
+      "enhanced_findings": [],
+      "expected_findings": [],
+      "name": "date-column-false-positive"
+    }
+  ],
+  "methodology": [
+    "Each expected finding label is one binary classification per fixture; all other observed labels are negatives.",
+    "The baseline runs the existing rule-based detector and configured dataset-overlap check.",
+    "The enhanced analyzer adds cross-cell lineage and objective-aware temporal findings.",
+    "Repair success means the generated source repair removed the targeted static rule; no notebook code is executed.",
+    "Verification accuracy only measures the expected inconclusive status when execution is unavailable."
+  ],
+  "metrics": {
+    "enhanced_analyzer": {
+      "f1": 1.0,
+      "false_negative": 0,
+      "false_negative_rate": 0.0,
+      "false_positive": 0,
+      "false_positive_rate": 0.0,
+      "fixture_count": 8,
+      "label_count": 6,
+      "precision": 1.0,
+      "recall": 1.0,
+      "true_negative": 40,
+      "true_positive": 8
+    },
+    "rule_based_baseline": {
+      "f1": 0.8571,
+      "false_negative": 2,
+      "false_negative_rate": 0.25,
+      "false_positive": 0,
+      "false_positive_rate": 0.0,
+      "fixture_count": 8,
+      "label_count": 6,
+      "precision": 1.0,
+      "recall": 0.75,
+      "true_negative": 40,
+      "true_positive": 6
+    }
+  },
+  "repairs_and_verification": {
+    "repair_attempts": 2,
+    "repair_failures": [],
+    "repair_success_rate": 1.0,
+    "repair_successes": 2,
+    "verification_accuracy": 1.0,
+    "verification_cases": 2,
+    "verification_correct": 2,
+    "verification_expected_status": "inconclusive_without_execution",
+    "verification_note": "This is only the guardrail check that unavailable runtime evidence does not produce a verified result; it is not overall verification accuracy."
+  },
+  "synthetic_only": true
+}

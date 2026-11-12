@@ -6,6 +6,11 @@ from typing import Any
 
 from backend.app.services.audit_analyzer import analyze_findings
 from backend.app.services.detection_engine import detect_findings
+from backend.app.services.temporal_analyzer import analyze_temporal
+from backend.app.services.variable_lineage import (
+    analyze_variable_lineage,
+    pre_split_preprocessing,
+)
 
 
 ANALYSIS_LIMITATIONS = [
@@ -144,7 +149,9 @@ def _operation_kind(call: ast.Call) -> str | None:
     return None
 
 
-def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
+def analyze_notebook(
+    cells: list[dict[str, Any]], research_objective: str | None = None
+) -> dict[str, Any]:
     imports: list[dict[str, Any]] = []
     libraries: set[str] = set()
     operations: list[dict[str, Any]] = []
@@ -473,6 +480,7 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
         "limitations": list(dict.fromkeys(limitations)),
         "trace_type": "static_inference_not_runtime_trace",
     }
+    lineage = analyze_variable_lineage(cells)
     findings = detect_findings(
         operations,
         cells,
@@ -480,6 +488,130 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
         analyze_findings(operations),
         selection_uses,
     )
+    existing_preprocessing_refs = {
+        (reference.get("cell_index"), reference.get("line"))
+        for finding in findings
+        if finding.get("rule_id") == "preprocessing_fit_before_split"
+        for reference in finding.get("source_refs", [])
+    }
+    for fitted, split in pre_split_preprocessing(lineage):
+        evidence_refs = {
+            (fitted["cell_index"], fitted["line"]),
+            (split["cell_index"], split["line"]),
+        }
+        if evidence_refs <= existing_preprocessing_refs:
+            for existing in findings:
+                if (
+                    existing.get("rule_id") == "preprocessing_fit_before_split"
+                    and evidence_refs
+                    <= {
+                        (reference.get("cell_index"), reference.get("line"))
+                        for reference in existing.get("source_refs", [])
+                    }
+                ):
+                    existing["evidence_type"] = "static_ast_lineage"
+                    existing["lineage_node_ids"] = [fitted["id"], split["id"]]
+                    existing.setdefault("limitations", []).append(
+                        "The lineage remains source-based and does not establish runtime row membership."
+                    )
+            continue
+        source_refs = [
+            {"cell_index": fitted["cell_index"], "line": fitted["line"]},
+            {"cell_index": split["cell_index"], "line": split["line"]},
+        ]
+        findings.append(
+            {
+                "id": (
+                    "preprocessing_fit_before_split-"
+                    f"cell{fitted['cell_index']}-line{fitted['line']}"
+                ),
+                "rule_id": "preprocessing_fit_before_split",
+                "category": "preprocessing_leakage",
+                "title": "Learned preprocessing precedes the train-test split",
+                "description": (
+                    "Variable lineage traces a fitted transformation through one or "
+                    "more assignments into a later train-test split."
+                ),
+                "severity": "medium",
+                "confidence": "medium",
+                "confidence_score": 0.7,
+                "classification": "potential_risk",
+                "status": "potential",
+                "explanation": (
+                    "The AST-derived lineage connects an unpartitioned preprocessing "
+                    "fit to a later split. This is source evidence, not runtime proof."
+                ),
+                "risk_explanation": (
+                    "The AST-derived lineage connects an unpartitioned preprocessing "
+                    "fit to a later split."
+                ),
+                "potential_impact": (
+                    "Held-out observations may have influenced learned preprocessing parameters."
+                ),
+                "recommendation": (
+                    "Split first, fit preprocessing on training data only, and use a "
+                    "scikit-learn Pipeline where appropriate."
+                ),
+                "human_confirmation_required": True,
+                "source_refs": source_refs,
+                "cell_indices": sorted({fitted["cell_index"], split["cell_index"]}),
+                "related_variables": sorted(
+                    {
+                        fitted["variable"],
+                        split["variable"],
+                        *fitted.get("parent_variables", []),
+                        *split.get("parent_variables", []),
+                    }
+                ),
+                "evidence": [
+                    {
+                        "cell_index": item["cell_index"],
+                        "line": item["line"],
+                        "snippet": item["source"],
+                    }
+                    for item in (fitted, split)
+                ],
+                "source_code_evidence": [
+                    {
+                        "cell_index": item["cell_index"],
+                        "line": item["line"],
+                        "snippet": item["source"],
+                    }
+                    for item in (fitted, split)
+                ],
+                "evidence_type": "static_ast_lineage",
+                "limitations": [
+                    "Lineage is based on top-level AST assignments and source cell order; control flow and runtime mutation are not modeled.",
+                    "Static analysis cannot prove which observations were present at runtime.",
+                ],
+            }
+        )
+    temporal_analysis = analyze_temporal(cells, research_objective)
+    findings.extend(temporal_analysis["findings"])
+    for finding in findings:
+        finding.setdefault(
+            "confidence_score",
+            {"high": 0.9, "medium": 0.7, "low": 0.4}.get(
+                finding.get("confidence"), 0.4
+            ),
+        )
+        finding.setdefault("issue_category", finding.get("category", "unknown"))
+        finding.setdefault("suggested_correction", finding.get("recommendation", ""))
+        finding.setdefault(
+            "source_line_numbers",
+            sorted(
+                {
+                    reference["line"]
+                    for reference in finding.get("source_refs", [])
+                    if isinstance(reference.get("line"), int)
+                }
+            ),
+        )
+        finding.setdefault(
+            "notebook_cell_indices", finding.get("cell_indices", [])
+        )
+        finding.setdefault("potential_impact", finding.get("explanation", ""))
+        finding.setdefault("human_confirmation_required", True)
     if parse_fallback_cells:
         limitations.append(
             "Python AST parsing failed for code cell(s) "
@@ -506,6 +638,8 @@ def analyze_notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
         "operations": grouped,
         "all_operations": operations,
         "pipeline_graph": pipeline_graph,
+        "variable_lineage": lineage,
+        "temporal_analysis": temporal_analysis,
         "findings": findings,
         "selection_uses": selection_uses,
         "confidence_definitions": CONFIDENCE_DEFINITIONS,

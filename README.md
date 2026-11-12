@@ -112,13 +112,16 @@ The repository currently includes:
 
 - notebook upload and validation for Jupyter Notebook v4 files
 - source-only static analysis of imports, dataset references, and ML operations
+- cross-cell variable lineage for assignments, aliases, versions, and recognized partition/preprocessing flows
 - pipeline graph generation from recognized operations and variable dependencies
 - supported leakage and evaluation audit rules for notebook source patterns
-- CSV analysis and train/test overlap checks
+- objective-aware temporal risk checks and CSV train/test row, identifier, and group overlap checks
+- SQLite-backed experiment-history records and repeated test-selection analysis
 - narrow deterministic repair proposals where the pattern is safe and supported
 - corrected notebook generation that preserves the original upload
 - isolated execution support and verification/comparison logic
 - evidence report generation in HTML, PDF, and JSON formats
+- a synthetic leakage benchmark with JSON results and a readable report
 
 ## Project architecture
 
@@ -132,14 +135,51 @@ The backend is a FastAPI application in `backend/app/main.py` and it exposes not
 ### ``backend/app/services/``
 - `notebook_parser.py` — validates notebook structure and extracts cell metadata
 - `notebook_analyzer.py` — extracts imports, dataset references, operations, and findings
+- `variable_lineage.py` — tracks top-level variable versions, aliases, parent variables, and source references across cells
+- `temporal_analyzer.py` — flags temporal workflow patterns when the objective or notebook context supports review
 - `pipeline_trace.py` — builds the static dependency graph
 - `detection_engine.py` — supports source-based evaluation and leakage checks
 - `repair_engine.py` — generates narrow deterministic repair proposals
 - `dataset_analyzer.py` — profiles CSV inputs without exposing row values
-- `dataset_overlap.py` — compares explicitly uploaded train/test datasets
+- `dataset_overlap.py` — compares explicitly uploaded train/test datasets and configured entity/group columns
+- `experiment_tracker.py` — fingerprints dataset versions and analyzes explicitly recorded experiment history
+- `benchmark_evaluator.py` — measures the existing rule-based detector against the enhanced analyzer on synthetic fixtures
 - `execution_manager.py` and `backend/app/services/docker_runner.py` — isolate notebook execution
 - `verification_engine.py` — compares original and corrected execution artifacts
 - `report_service.py` — builds evidence snapshots and exports
+
+## Research features, APIs, and limitations
+
+Notebook findings include rule ID, category, severity, confidence, explanation, source references, affected variables, impact, a suggested correction, and a human-review indicator. Confidence is separate from severity. Findings remain static-source evidence and are not proof that runtime data actually followed the inferred path.
+
+The current analysis supports:
+
+- **Variable lineage:** source-order tracking for recognized top-level assignments, aliases, reassignment versions, and selected preprocessing/split relationships. Branches, dynamic code, mutation through shared references, and runtime execution order are not modeled.
+- **Temporal review:** random splitting and ordering, selected shift/rolling and cross-validation patterns are flagged when forecasting is explicit or source context is suggestive. A date column alone is not enough. Timestamp meaning, chronology, and the prediction horizon need human confirmation.
+- **Entity/group overlap:** exact-row checks and explicit identifier/group column comparisons are available for two uploaded CSVs. Candidate ID-like columns are suggestions only; group semantics must be confirmed. Reports avoid returning raw overlapping identifiers.
+- **Experiment history:** records are persisted with a dataset fingerprint and model/metric/selection metadata. A repeated test-selection warning requires at least two recorded test-data decisions for the same fingerprint. A notebook snapshot or a single final evaluation cannot establish repeated tuning.
+- **Repair verification:** the original finding, approved source edits, corrected analysis, and execution evidence are checked independently. `verification_status_normalized` uses `verified`, `partially_verified`, `inconclusive`, or `failed`; the legacy `verification_status` field remains for compatibility. Successful execution alone is not evidence that leakage is absent.
+
+The experiment-history routes require the notebook's access token in the `Authorization` header:
+
+- `POST /api/notebooks/{notebook_id}/experiment-history` records one experiment. Supply `dataset_ids` for associated uploaded datasets or a `dataset_version` label, along with model name, hyperparameters, training/validation/test references, metric, value, and selection decision. The response includes the record, current history, and findings.
+- `GET /api/notebooks/{notebook_id}/experiment-history` returns the notebook's records and history analysis.
+
+## Synthetic benchmark
+
+Fixtures in `tests/fixtures/leakage_notebooks/` are synthetic. Run the evaluator from the repository root:
+
+```powershell
+python -m backend.app.services.benchmark_evaluator --output-dir benchmark-results
+```
+
+This writes `benchmark_results.json` and `benchmark_report.md`. The reported precision/recall/F1 and error rates are fixture-set metrics, not estimates of real-world performance. Repair success measures removal of a targeted static rule and does not execute notebooks. The verification metric is deliberately limited to checking that missing runtime evidence yields an inconclusive result; it is not overall verification accuracy.
+
+## Docker execution security and packages
+
+Execution is explicit and uses the versioned `codetrace-notebook-runner:1.0.0` image by default. The runner disables networking, uses a non-root account, a read-only container filesystem with a bounded writable temporary area, drops Linux capabilities, and applies CPU, memory, process, output, and timeout limits. The application stores a SHA-256 checksum for collected notebook artifacts.
+
+The runner does not install arbitrary per-notebook packages or enable network access. To add packages, build a reviewed custom runner image from `backend/execution/Dockerfile`, pin every package to an exact version (and preferably pin the base image by digest in controlled deployments), rebuild and scan the image, then configure `CODETRACE_EXECUTION_IMAGE` to that fixed tag or digest. Do not mount package caches or enable network access to make installs work at notebook runtime.
 
 ## Key workflow principles
 
@@ -164,4 +204,3 @@ Current limitations include:
 ## Summary
 
 CodeTrace is designed as an evidence-first review environment for ML notebooks. Its value is not in pretending to know everything about a notebook from a single static pass, but in providing a transparent, source-linked, reviewable workflow that gives teams structured evidence and safe, bounded actions to take next.
-

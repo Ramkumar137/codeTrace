@@ -3,6 +3,7 @@
 import importlib.metadata
 import json
 import platform
+import re
 import shutil
 import sys
 import time
@@ -65,16 +66,38 @@ def _package_versions():
 
 def main():
     input_path, notebook_path, result_path = map(Path, sys.argv[1:4])
+    if (
+        input_path != Path("/input/notebook.ipynb")
+        or notebook_path != Path("/workspace/executed.ipynb")
+        or result_path != Path("/workspace/result.json")
+        or Path.cwd().resolve() != Path("/workspace")
+    ):
+        raise ValueError("The isolated runner received an unexpected input or output path.")
+    if input_path.is_symlink() or not input_path.is_file():
+        raise ValueError("The mounted notebook input is not a regular file.")
     output_limit = max(1, int(sys.argv[4]))
     timeout_seconds = max(1, int(sys.argv[5]))
     dataset_names = sys.argv[6:]
     notebook = nbformat.read(input_path, as_version=nbformat.NO_CONVERT)
     nbformat.validate(notebook)
     for filename in dataset_names:
+        if (
+            not filename
+            or Path(filename).name != filename
+            or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", filename)
+        ):
+            raise ValueError("An associated dataset has an unsafe filename.")
         source = Path("/input") / filename
-        if source.parent != Path("/input") or not source.is_file():
+        destination = Path.cwd() / filename
+        if (
+            source.parent != Path("/input")
+            or source.is_symlink()
+            or not source.is_file()
+            or destination.parent.resolve() != Path("/workspace")
+            or destination.is_symlink()
+        ):
             raise ValueError("An explicitly associated dataset is missing.")
-        shutil.copyfile(source, Path.cwd() / filename)
+        shutil.copyfile(source, destination)
 
     completed_cells = []
     successful_cells = set()
@@ -207,6 +230,12 @@ def main():
             cell_index in successful_cell_indices,
         )
 
+    if notebook_path.is_symlink():
+        notebook_path.unlink()
+    elif notebook_path.is_dir():
+        shutil.rmtree(notebook_path)
+    elif notebook_path.exists():
+        notebook_path.unlink()
     nbformat.write(notebook, notebook_path)
     result = {
         "status": status,
@@ -220,6 +249,12 @@ def main():
         "package_versions": _package_versions(),
         "outputs": completed_cells,
     }
+    if result_path.is_symlink():
+        result_path.unlink()
+    elif result_path.is_dir():
+        shutil.rmtree(result_path)
+    elif result_path.exists():
+        result_path.unlink()
     result_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
     collection_deadline = time.monotonic() + ARTIFACT_COLLECTION_WAIT_SECONDS
     while time.monotonic() < collection_deadline:

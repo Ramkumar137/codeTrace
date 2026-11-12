@@ -8,6 +8,7 @@ import logging
 import json
 import hashlib
 import hmac
+import math
 import os
 from pathlib import Path
 from urllib.parse import quote
@@ -29,6 +30,7 @@ from backend.app.models.execution import (
     ExecutionStatusResponse,
     PairedExecutionRequest,
 )
+from backend.app.models.experiment import ExperimentHistoryRequest
 from backend.app.models.notebook import NotebookUploadResponse
 from backend.app.models.verification import VerificationRequest
 from backend.app.services.dataset_analyzer import (
@@ -36,6 +38,12 @@ from backend.app.services.dataset_analyzer import (
     analyze_csv_dataset,
 )
 from backend.app.services.dataset_overlap import analyze_train_test_overlap
+from backend.app.services.experiment_tracker import (
+    analyze_experiment_history,
+    fingerprint_dataset_version,
+    fingerprint_datasets,
+    make_experiment_record,
+)
 from backend.app.services.notebook_parser import NotebookParseError, parse_notebook
 from backend.app.services.repair_engine import RepairError, generate_corrected_notebook
 from backend.app.services.execution_manager import (
@@ -54,6 +62,17 @@ DEFAULT_MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
 MAX_UPLOAD_SIZE_BYTES = int(
     os.environ.get("CODETRACE_MAX_UPLOAD_SIZE_BYTES", DEFAULT_MAX_UPLOAD_SIZE_BYTES)
 )
+RESEARCH_OBJECTIVES = {
+    "unspecified",
+    "generalization",
+    "unseen_entities",
+    "forecasting",
+    "time_series_forecasting",
+    "temporal_prediction",
+    "future_prediction",
+    "future_known_groups",
+    "independent_rows",
+}
 if MAX_UPLOAD_SIZE_BYTES <= 0:
     raise RuntimeError("CODETRACE_MAX_UPLOAD_SIZE_BYTES must be greater than zero.")
 
@@ -189,7 +208,10 @@ def api_health():
     response_model=NotebookUploadResponse,
     tags=["notebooks"],
 )
-async def upload_notebook(file: UploadFile | str | None = File(default=None)):
+async def upload_notebook(
+    file: UploadFile | str | None = File(default=None),
+    research_objective: str = Form(default="unspecified"),
+):
     """Validate and statically analyze a notebook; retain it for explicit experiments."""
     if file is None:
         raise HTTPException(
@@ -209,6 +231,14 @@ async def upload_notebook(file: UploadFile | str | None = File(default=None)):
         )
 
     try:
+        if research_objective not in RESEARCH_OBJECTIVES:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_research_objective",
+                    "message": "Select a supported research objective.",
+                },
+            )
         filename = file.filename
         if not filename or not filename.strip():
             raise HTTPException(
@@ -249,7 +279,7 @@ async def upload_notebook(file: UploadFile | str | None = File(default=None)):
             )
 
         try:
-            notebook = parse_notebook(filename, content)
+            notebook = parse_notebook(filename, content, research_objective)
         except NotebookParseError as error:
             raise HTTPException(
                 status_code=error.status_code,
@@ -257,7 +287,7 @@ async def upload_notebook(file: UploadFile | str | None = File(default=None)):
             ) from error
 
         notebook_id, access_token = _get_execution_store().create_original_notebook(
-            filename, content
+            filename, content, research_objective
         )
         return {
             "status": "success",
@@ -277,6 +307,7 @@ async def generate_notebook_repairs(
     file: UploadFile | str | None = File(default=None),
     repair_ids: str = Form(default="[]"),
     notebook_id: str | None = Form(default=None),
+    research_objective: str = Form(default="unspecified"),
     authorization: str | None = Header(default=None),
 ):
     """Generate a separate notebook from explicitly approved deterministic repairs."""
@@ -373,10 +404,25 @@ async def generate_notebook_repairs(
                 },
             )
 
+        if original_record is not None:
+            research_objective = original_record.get(
+                "research_objective", "unspecified"
+            )
+        elif research_objective not in RESEARCH_OBJECTIVES:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_research_objective",
+                    "message": "Select a supported research objective.",
+                },
+            )
+
         try:
-            parsed_notebook = parse_notebook(filename, content)
+            parsed_notebook = parse_notebook(
+                filename, content, research_objective
+            )
             corrected_content, corrected_filename = generate_corrected_notebook(
-                content, filename, selected_ids
+                content, filename, selected_ids, research_objective
             )
         except NotebookParseError as error:
             raise HTTPException(
@@ -450,7 +496,11 @@ async def analyze_notebook_version(
             },
         )
     try:
-        notebook = parse_notebook(artifact["filename"], artifact["content"])
+        notebook = parse_notebook(
+            artifact["filename"],
+            artifact["content"],
+            artifact.get("research_objective"),
+        )
     except NotebookParseError as error:
         raise HTTPException(
             status_code=422,
@@ -788,10 +838,14 @@ async def get_paired_experiment(
             )
         try:
             original_analysis = parse_notebook(
-                original_record["filename"], bytes(original_record["content"])
+                original_record["filename"],
+                bytes(original_record["content"]),
+                original_record.get("research_objective"),
             )
             corrected_analysis = parse_notebook(
-                corrected_record["filename"], bytes(corrected_record["content"])
+                corrected_record["filename"],
+                bytes(corrected_record["content"]),
+                corrected_record.get("research_objective"),
             )
             verification = build_verification(
                 original_notebook={**original_analysis, "notebook_id": notebook_id},
@@ -830,6 +884,134 @@ async def get_paired_experiment(
         "corrected_execution": corrected_execution,
         "verification": verification,
         "comparison": verification["comparison"] if verification else None,
+    }
+
+
+@app.post(
+    "/api/notebooks/{notebook_id}/experiment-history",
+    tags=["experiments"],
+)
+async def record_experiment_history(
+    notebook_id: str,
+    request: ExperimentHistoryRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Persist one explicitly supplied experiment record for this notebook."""
+    token = _require_access_token(authorization)
+    store = _get_execution_store()
+    notebook = _authorized_notebook(notebook_id, token)
+    if notebook["notebook_type"] != "original":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "original_notebook_required",
+                "message": "Experiment history is recorded against the original notebook.",
+            },
+        )
+    if not math.isfinite(request.metric_value):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_metric_value",
+                "message": "The metric value must be finite.",
+            },
+        )
+    try:
+        serialized_parameters = json.dumps(
+            request.hyperparameters, allow_nan=False, ensure_ascii=False
+        )
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_hyperparameters",
+                "message": "Hyperparameters must be JSON-compatible finite values.",
+            },
+        ) from error
+    if len(serialized_parameters.encode("utf-8")) > 16_384:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "hyperparameters_too_large",
+                "message": "Hyperparameters must not exceed 16 KiB.",
+            },
+        )
+
+    if request.dataset_ids:
+        datasets = store.get_datasets(notebook_id, request.dataset_ids)
+        if datasets is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_dataset_ids",
+                    "message": "Every selected dataset must be associated with this notebook.",
+                },
+            )
+        dataset_fingerprint = fingerprint_datasets(datasets)
+    elif request.dataset_version and request.dataset_version.strip():
+        dataset_fingerprint = fingerprint_dataset_version(request.dataset_version)
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "dataset_version_required",
+                "message": "Supply associated dataset IDs or a dataset version label.",
+            },
+        )
+
+    previous_records = store.list_experiment_history(notebook_id, token)
+    if previous_records is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_not_found",
+                "message": "The notebook was not found or is not accessible.",
+            },
+        )
+    record = make_experiment_record(
+        request.model_dump(),
+        dataset_fingerprint,
+        previous_records[-1]["experiment_id"] if previous_records else None,
+    )
+    stored = store.create_experiment_history(notebook_id, token, record)
+    if stored is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_not_found",
+                "message": "The notebook was not found or is not accessible.",
+            },
+        )
+    records = [*previous_records, stored]
+    return {
+        "status": "success",
+        "experiment": stored,
+        "experiments": records,
+        "analysis": analyze_experiment_history(records),
+    }
+
+
+@app.get(
+    "/api/notebooks/{notebook_id}/experiment-history",
+    tags=["experiments"],
+)
+async def get_experiment_history(
+    notebook_id: str,
+    authorization: str | None = Header(default=None),
+):
+    token = _require_access_token(authorization)
+    records = _get_execution_store().list_experiment_history(notebook_id, token)
+    if records is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "notebook_not_found",
+                "message": "The notebook was not found or is not accessible.",
+            },
+        )
+    return {
+        "experiments": records,
+        "analysis": analyze_experiment_history(records),
     }
 
 
@@ -919,10 +1101,14 @@ async def verify_notebook_repairs(
 
     try:
         original_analysis = parse_notebook(
-            original_record["filename"], bytes(original_record["content"])
+            original_record["filename"],
+            bytes(original_record["content"]),
+            original_record.get("research_objective"),
         )
         corrected_analysis = parse_notebook(
-            corrected_record["filename"], bytes(corrected_record["content"])
+            corrected_record["filename"],
+            bytes(corrected_record["content"]),
+            corrected_record.get("research_objective"),
         )
         result = build_verification(
             original_notebook={
@@ -1332,7 +1518,12 @@ async def download_notebook_execution_artifact(
         headers={
             "Content-Disposition": (
                 f"attachment; filename*=UTF-8''{quote(filename)}"
-            )
+            ),
+            **(
+                {"X-Content-SHA256": execution["artifact_checksum"]}
+                if execution.get("artifact_checksum")
+                else {}
+            ),
         },
     )
 

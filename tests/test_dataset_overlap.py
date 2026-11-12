@@ -62,6 +62,12 @@ def test_configured_identifier_overlap_is_reported():
     assert finding["id"] == "train_test_identifier_overlap"
     assert finding["evidence"][0]["overlap_count"] == 1
     assert finding["related_pipeline_node_ids"] == []
+    assert finding["evidence"][0]["overlapping_identifiers"] == ["Identifier 001"]
+    assert "c-2" not in str(finding["evidence"])
+    assert finding["related_variables"] == ["customer_id"]
+    assert finding["evidence"][0]["overlapping_identifiers"] == ["Identifier 001"]
+    assert "c-2" not in str(finding["evidence"])
+    assert finding["related_variables"] == ["customer_id"]
 
 
 def test_configured_group_overlap_is_reported():
@@ -81,6 +87,19 @@ def test_configured_group_overlap_is_reported():
     assert "ward-a" not in response.text
 
 
+def test_identifier_like_columns_are_suggestions_not_automatic_groups():
+    response = compare(
+        b"student_id,score\n1001,8\n",
+        b"student_id,score\n1002,9\n",
+    )
+
+    candidates = response.json()["overlap"]["entity_column_candidates"]
+    assert candidates[0]["column"] == "student_id"
+    assert candidates[0]["value_shape"] == "numeric"
+    assert candidates[0]["requires_user_confirmation"] is True
+    assert response.json()["overlap"]["findings"] == []
+
+
 def test_unseen_group_objective_explains_group_overlap_conflict():
     response = compare(
         b"group,feature\nward-a,alpha\nward-b,beta\n",
@@ -98,7 +117,24 @@ def test_unseen_group_objective_explains_group_overlap_conflict():
     assert finding["severity"] == "high"
     assert "conflict" in finding["explanation"]
     assert "group-aware split" in finding["recommendation"]
+    assert "GroupShuffleSplit" in finding["recommendation"]
+    assert "GroupKFold" in finding["recommendation"]
+    assert "GroupShuffleSplit" in finding["recommendation"]
+    assert "GroupKFold" in finding["recommendation"]
     assert "ward-a" not in response.text
+
+
+def test_identifier_like_columns_are_suggestions_not_automatic_groups():
+    response = compare(
+        b"student_id,score\n1001,8\n",
+        b"student_id,score\n1002,9\n",
+    )
+
+    candidates = response.json()["overlap"]["entity_column_candidates"]
+    assert candidates[0]["column"] == "student_id"
+    assert candidates[0]["value_shape"] == "numeric"
+    assert candidates[0]["requires_user_confirmation"] is True
+    assert response.json()["overlap"]["findings"] == []
 
 
 def test_future_known_group_objective_does_not_call_group_overlap_a_defect():

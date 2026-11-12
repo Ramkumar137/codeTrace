@@ -2,6 +2,7 @@
 
 import csv
 import io
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from backend.app.services.dataset_analyzer import DatasetAnalysisError
@@ -88,15 +89,22 @@ def _finding(
         "id": finding_id,
         "rule_id": finding_id,
         "category": category,
+        "issue_category": category,
         "title": title,
         "description": description,
         "severity": severity,
         "confidence": confidence,
+        "confidence_score": {"high": 0.9, "medium": 0.7, "low": 0.4}[confidence],
         "classification": "dataset_evidence",
         "status": "potential",
         "recommendation": recommendation,
+        "suggested_correction": recommendation,
+        "source_line_numbers": [],
+        "notebook_cell_indices": [],
         "explanation": explanation,
         "risk_explanation": explanation,
+        "potential_impact": explanation,
+        "human_confirmation_required": True,
         "caveat": limitation,
         "limitations": [limitation],
         "source_refs": [],
@@ -130,6 +138,9 @@ def analyze_train_test_overlap(
     test_columns, test_rows = _read_rows(test_content, "test")
     train_records = [dict(zip(train_columns, row)) for row in train_rows]
     test_records = [dict(zip(test_columns, row)) for row in test_rows]
+    entity_column_candidates = _entity_column_candidates(
+        train_columns, train_records
+    )
 
     findings = []
     checks = []
@@ -279,6 +290,18 @@ def analyze_train_test_overlap(
                     or "Identifier semantics are supplied by the user; matching values do not establish the intended split policy."
                 ),
             )
+            finding["related_variables"] = [column]
+            finding["lineage_association"] = (
+                "user_configured_column_name_only; dataset-to-notebook semantics were not inferred"
+            )
+            if not is_group:
+                finding["evidence"][0]["overlapping_identifiers"] = [
+                    f"Identifier {index:03d}"
+                    for index, _ in enumerate(sorted(shared_values)[:30], start=1)
+                ]
+                finding["evidence"][0]["identifiers_truncated"] = (
+                    len(shared_values) > 30
+                )
             if is_group and evaluation_objective == "future_known_groups":
                 finding["classification"] = "informational_review"
                 finding["status"] = "contextual"
@@ -294,6 +317,7 @@ def analyze_train_test_overlap(
         "test_row_count": len(test_rows),
         "checks": checks,
         "group_partition_visualization": group_partition_visualization,
+        "entity_column_candidates": entity_column_candidates,
         "findings": findings,
         "limitations": [
             "Only the two explicitly uploaded CSV files are compared; notebook paths are never opened.",
@@ -301,6 +325,52 @@ def analyze_train_test_overlap(
             "Identifier and group semantics are configured by the user; raw values are not returned or retained.",
         ],
     }
+
+
+def _entity_column_candidates(
+    columns: list[str], records: list[dict[str, str]]
+) -> list[dict[str, Any]]:
+    """Suggest likely entity columns by name; never assign group semantics."""
+    hints = (
+        "student",
+        "patient",
+        "customer",
+        "device",
+        "user",
+        "entity",
+        "subject",
+        "account",
+        "household",
+        "member",
+        "person",
+        "uuid",
+    )
+    candidates = []
+    for column in columns:
+        normalized = column.casefold().replace("-", "_")
+        if not (
+            normalized == "id"
+            or normalized.endswith("_id")
+            or any(hint in normalized for hint in hints)
+        ):
+            continue
+        values = [record[column] for record in records if record[column]]
+        numeric = bool(values)
+        for value in values:
+            try:
+                Decimal(value)
+            except (InvalidOperation, ValueError):
+                numeric = False
+                break
+        candidates.append(
+            {
+                "column": column,
+                "value_shape": "numeric" if numeric else "text_or_mixed",
+                "reason": "The column name resembles an identifier or entity field.",
+                "requires_user_confirmation": True,
+            }
+        )
+    return candidates
 
 
 def _group_partition_visualization(
@@ -334,7 +404,7 @@ def _group_overlap_guidance(
     if evaluation_objective == "unseen_groups":
         return (
             "high",
-            "Use a group-aware split so every configured group is assigned to only one partition.",
+            "Use a group-aware split: GroupShuffleSplit for a holdout or GroupKFold for cross-validation, keeping every configured group within one partition.",
             "Shared groups conflict with the declared goal of evaluating generalization to entirely unseen groups.",
             "Group overlap conflicts with the declared unseen-group evaluation objective.",
         )

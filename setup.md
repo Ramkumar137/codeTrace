@@ -13,13 +13,13 @@ This project is a Python + FastAPI application with a static frontend. It does n
 
 Create a virtual environment and install the dependencies:
 
-```text
+```powershell
 python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+.\venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
-On Windows PowerShell, activate the virtual environment in the shell before running the application.
+On macOS/Linux, activate with `source venv/bin/activate`.
 
 ## Run the backend
 
@@ -36,13 +36,36 @@ The frontend is static HTML and JavaScript. It can be opened directly from the f
 ```text
 python -m http.server 5500 --directory frontend
 ```
-### `` or``
-click ```frontend/index.html```from file explorer
+Alternatively, open `frontend/index.html` directly in a browser.
 
 
 ## Optional Docker execution
 
 Docker is only required for the explicit isolated execution flow. If the configured image is unavailable, the execution API reports an unavailable status rather than running notebook code on the application host.
+
+Build the versioned runner image from the repository root:
+
+```powershell
+docker build -t codetrace-notebook-runner:1.0.0 backend/execution
+$env:CODETRACE_EXECUTION_IMAGE = "codetrace-notebook-runner:1.0.0"
+uvicorn backend.app.main:app --reload
+```
+
+The runner is non-root, network-disabled, and resource-limited. It does not install arbitrary notebook dependencies. Add an allowed package by reviewing and pinning its exact version in `backend/execution/Dockerfile`, rebuilding and scanning the image, and configuring a fixed image tag or digest. Do not enable notebook-time network installation.
+
+## Experiment history
+
+The frontend can record and display explicit experiment records. API users can use the authenticated `POST` and `GET /api/notebooks/{notebook_id}/experiment-history` routes; see the request model in `backend/app/models/experiment.py`. Repeated test-driven selection is reported only from multiple persisted records tied to the same dataset fingerprint.
+
+## Benchmark
+
+Run the synthetic benchmark from the repository root:
+
+```powershell
+python -m backend.app.services.benchmark_evaluator --output-dir benchmark-results
+```
+
+It writes JSON metrics and a Markdown report. Fixture-set results are not production performance estimates; repair checks are source-only, and the verification metric only validates conservative behavior when execution is unavailable.
 
 ## Verification
 
@@ -52,7 +75,7 @@ Run the project test suite:
 python -m pytest tests -q
 ```
 
-Current repository status: 154 passed, 1 warning.
+Use the result from the current checkout; earlier test counts are not evidence that subsequent changes pass.
 
 ## Troubleshooting
 

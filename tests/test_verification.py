@@ -125,6 +125,7 @@ def test_preprocessing_repair_is_verified_and_metrics_remain_separate():
 
     finding = result["findings"][0]
     assert finding["verification_status"] == "verified"
+    assert finding["verification_status_normalized"] == "verified"
     assert finding["repair_id"] == repairs[0]["repair"]["repair_id"]
     assert finding["execution_ids"] == {
         "original": "original-run",
@@ -162,6 +163,7 @@ def test_preprocessing_repair_that_leaves_full_dataset_fit_is_not_verified():
     result = _build_pair(original, corrected, repairs)
 
     assert result["findings"][0]["verification_status"] == "not_verified"
+    assert result["findings"][0]["verification_status_normalized"] == "failed"
     assert "remains" in " ".join(result["findings"][0]["remaining_risks"])
 
 
@@ -218,6 +220,13 @@ def test_incomplete_execution_evidence_has_explicit_status(
     )
 
     assert result["findings"][0]["verification_status"] == expected
+    expected_normalized = (
+        "failed" if expected == "execution_failed" else expected
+    )
+    assert (
+        result["findings"][0]["verification_status_normalized"]
+        == expected_normalized
+    )
     if corrected_status == "unavailable":
         assert any(
             "was unavailable; runtime verification was not performed."

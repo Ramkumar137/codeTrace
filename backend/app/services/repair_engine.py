@@ -30,6 +30,12 @@ _MANUAL_REVIEW_RULES = {
     "exact_train_test_row_overlap",
     "train_test_identifier_overlap",
     "train_test_group_overlap",
+    "random_split_for_forecasting",
+    "temporal_ordering_missing_before_split",
+    "future_shift_feature",
+    "centered_rolling_feature",
+    "rolling_window_before_partition",
+    "non_temporal_cross_validation",
 }
 _SPLIT_TARGET_PATTERNS = (
     re.compile(r"^x_train$", re.IGNORECASE),
@@ -145,6 +151,7 @@ def generate_corrected_notebook(
     content: bytes,
     filename: str,
     approved_repair_ids: list[str],
+    research_objective: str | None = None,
 ) -> tuple[bytes, str]:
     """Apply only selected, non-conflicting proposals to a separate notebook document."""
     if len(approved_repair_ids) != len(set(approved_repair_ids)):
@@ -178,7 +185,7 @@ def generate_corrected_notebook(
         ) from error
 
     parsed_cells = _source_cells(raw_notebook)
-    analysis = analyze_notebook(parsed_cells)
+    analysis = analyze_notebook(parsed_cells, research_objective)
     catalog = build_repair_catalog(parsed_cells, analysis.get("findings", []))
     selected_ids = set(approved_repair_ids)
     if not selected_ids:

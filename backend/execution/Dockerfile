@@ -1,5 +1,8 @@
 FROM python:3.12.8-slim
 
+ARG CODETRACE_RUNNER_VERSION=1.0.0
+LABEL org.opencontainers.image.version="${CODETRACE_RUNNER_VERSION}"
+
 RUN pip install --no-cache-dir nbclient==0.10.2 ipykernel==6.29.5 nbformat==5.10.4 \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin codetrace
 

@@ -275,6 +275,36 @@ async def test_cancel_does_not_hide_container_cleanup_failure(tmp_path):
     assert result["error_details"]["message"] == "Container cleanup failed."
 
 
+@pytest.mark.asyncio
+async def test_successful_artifact_is_persisted_with_sha256_checksum(tmp_path):
+    import hashlib
+
+    store = ExecutionStore(tmp_path)
+    notebook_id, token = store.create_original_notebook(
+        "example.ipynb", b"notebook bytes"
+    )
+    notebook = store.get_notebook(notebook_id, token)
+    runner = MockDockerRunner()
+    manager = ExecutionManager(store, runner)
+
+    queued = await manager.start(notebook, [], token)
+    for _ in range(100):
+        result = store.get_execution(queued["execution_id"], token)
+        if result["status"] not in {"queued", "running"}:
+            break
+        await asyncio.sleep(0.01)
+
+    assert result["status"] == "completed"
+    assert result["artifact_checksum"] == hashlib.sha256(
+        b"executed notebook"
+    ).hexdigest()
+
+
+def test_latest_runner_tag_is_rejected():
+    with pytest.raises(ValueError, match="pinned version tag or digest"):
+        DockerRunner(image="codetrace-notebook-runner:latest")
+
+
 def test_execution_request_requires_notebook_capability_token(tmp_path, monkeypatch):
     store = ExecutionStore(tmp_path)
     record, _ = stored_notebook(store)

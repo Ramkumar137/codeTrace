@@ -1,6 +1,7 @@
 """Asynchronous orchestration and lifecycle management for notebook runs."""
 
 import asyncio
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -182,6 +183,12 @@ class ExecutionManager:
                     outputs=result.get("outputs", []),
                     logs=result.get("logs", ""),
                     artifact=result.get("artifact"),
+                    artifact_checksum=(
+                        result.get("artifact_checksum")
+                        or hashlib.sha256(bytes(result["artifact"])).hexdigest()
+                        if result.get("artifact") is not None
+                        else None
+                    ),
                 )
         except asyncio.CancelledError:
             self.store.update_execution(

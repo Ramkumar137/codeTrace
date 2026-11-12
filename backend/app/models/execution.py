@@ -33,3 +33,4 @@ class ExecutionStatusResponse(BaseModel):
     outputs: list[dict[str, Any]]
     logs: str
     artifact_available: bool
+    artifact_checksum: str | None = None
