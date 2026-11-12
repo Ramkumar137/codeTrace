@@ -21,26 +21,10 @@ pip install -r requirements.txt
 
 On Windows PowerShell, activate the virtual environment in the shell before running the application.
 
-## Local configuration
-
-The main runtime settings are:
-
-- CODETRACE_MAX_UPLOAD_SIZE_BYTES: notebook and CSV upload limit in bytes
-- CODETRACE_DATA_DIR: SQLite data directory for persisted metadata and executions
-- CODETRACE_EXECUTION_IMAGE: Docker image used for isolated execution
-
-Example values:
-
-```text
-CODETRACE_MAX_UPLOAD_SIZE_BYTES = 20971520
-CODETRACE_DATA_DIR = ~/.codetrace
-CODETRACE_EXECUTION_IMAGE = codetrace-notebook-runner:latest
-```
-
 ## Run the backend
 
 ```text
-python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn backend.app.main:app --reload
 ```
 
 The API is available at http://127.0.0.1:8000.
@@ -52,8 +36,9 @@ The frontend is static HTML and JavaScript. It can be opened directly from the f
 ```text
 python -m http.server 5500 --directory frontend
 ```
+### `` or``
+click ```frontend/index.html```from file explorer
 
-Then open http://localhost:5500 in the browser.
 
 ## Optional Docker execution
 
